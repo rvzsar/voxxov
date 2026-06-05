@@ -1,20 +1,21 @@
 # GigaAM Desktop
 
-Десктопное приложение для скачивания видео (yt-dlp) и распознавания русской речи (GigaAM-V3 RNNT) с ускорением на Intel через OpenVINO.
+Десктопное приложение для скачивания видео (yt-dlp) и распознавания русской речи
+([GigaAM V3](https://github.com/salute-developers/GigaAM)) с поддержкой прокси,
+конфигурируемого пайплайна и удобного Svelte-UI.
 
 ## Стек
 
-- **Tauri 2.x** — нативный десктоп-обвес (Windows / Linux / macOS).
-- **Rust** — оркестрация, скачивание, обработка аудио, инференс ONNX.
+- **Tauri 2.x** — нативный десктоп (Windows / Linux / macOS).
+- **Rust** — оркестрация, скачивание, ffmpeg-обвязка, ASR.
 - **Svelte 5** (runes) + **Vite** + **TypeScript** — UI.
-- **ONNX Runtime** (`ort`) + **OpenVINO Execution Provider** — инференс GigaAM-RNNT.
 - **yt-dlp** + **ffmpeg** — внешние sidecar-бинари.
+- **GigaAM v3** — Python-сабпроцесс (или подключаемый CLI).
 
 ## Железо (target)
 
 - Intel Core Ultra 5 125U (12 ядер, AVX-VNNI, NPU Intel AI Boost).
-- Без дискретного GPU → основной путь инференса: OpenVINO CPU.
-- Сборка — **только на GitHub Actions** (`windows-2022`).
+- Инференс: GigaAM v3 (`v3_e2e_ctc` или `v3_rnnt`).
 
 ## Структура
 
@@ -22,43 +23,76 @@
 .
 ├── apps/desktop/           # Tauri-приложение (Rust + Svelte)
 │   ├── src/                # Svelte 5 фронт
+│   │   ├── lib/components/ # URL-input, JobList, Settings, LogView, ...
+│   │   └── lib/stores/     # jobs.svelte.ts (rune-стор)
 │   └── src-tauri/          # Rust-бэкенд
-├── tools/                  # Утилиты разработчика (экспорт ONNX, sidecars)
-├── scripts/                # Локальные скрипты (PowerShell)
-├── models/                 # Сюда скачиваются ONNX-модели
-└── .github/workflows/      # CI/CD: сборка и релизы
+│       ├── src/            # modules: config, pipeline, ytdlp, ffmpeg, asr, ...
+│       └── tauri.conf.json
+├── scripts/                # install-sidecars.ps1, dev.cmd, setup-gigaam.cmd
+├── models/                 # сюда скачиваются модели GigaAM
+└── .github/workflows/      # CI/CD
 ```
 
-## Быстрый старт (разработка UI)
+## Быстрый старт
 
-Локально компилировать Rust **не нужно** — это делает GitHub Actions. Достаточно Node.js 20+.
+1. Поставить зависимости:
 
-```powershell
-cd apps/desktop
-npm install
-npm run dev
-```
+    ```powershell
+    pwsh scripts/install-sidecars.ps1   # yt-dlp + ffmpeg в ./sidecars
+    pwsh scripts/setup-gigaam.cmd       # Python venv + gigaam (опционально)
+    ```
 
-Откроется dev-сервер Svelte на `http://localhost:1420`. UI работает в мок-режиме, без вызова Rust.
+2. Указать пути к бинарям и модели в `Settings` UI (или в
+   `%APPDATA%/GigaAM/config.toml`).
 
-## Сборка релизного билда
+3. Запустить dev-режим:
 
-Сборка происходит на GitHub Actions при push в `main` или вручную через вкладку Actions.
-Артефакты (`.msi` / `.exe` для Windows) публикуются в Releases.
+    ```cmd
+    scripts\dev.cmd
+    ```
 
 ## Конфигурация
 
-Первый запуск создаёт `~/.config/gigaam-desktop/config.toml`. Структура:
+Файл: `%APPDATA%\GigaAM\config.toml` (Windows), `~/.config/GigaAM/...` (Linux).
 
 ```toml
-[proxy]   # none | http | https | socks5 | custom
+[proxy]
+kind = "socks5"        # none | http | https | socks5
+host = "127.0.0.1"
+port = 1080
+
 [download]
-[asr]     # model_dir, device, threads, chunk_length_s
-[output]  # formats, max_line_length
+format = "bv*+ba/b"
+max_height = 1080
+concurrent_fragments = 4
+custom_ytdlp_path = "" # пусто → автодетект
+custom_ffmpeg_path = ""
+
+[asr]
+model_path = ""        # путь к ONNX/модели или "cmd:my-cli --flag"
+sample_rate = 16000
+language = "ru"
+
+[output]
+dir = ""               # пусто → ~/.../transcripts
+formats = ["txt", "srt", "json"]
+
 [logging]
+level = "info"
+file = true
 ```
 
-Полная схема — в [`apps/desktop/src-tauri/src/core/config.rs`](apps/desktop/src-tauri/src/core/config.rs).
+## Пайплайн
+
+```
+URL → yt-dlp (download) → ffmpeg (16kHz mono WAV + loudnorm) → GigaAM (ASR) → txt/srt/json
+```
+
+Все стадии и подробные логи приходят во frontend через Tauri-событие `job:event`.
+
+## Поддерживаемые прокси
+
+`none | http | https | socks5` (с user/password и `no_proxy`-списком).
 
 ## Лицензия моделей
 

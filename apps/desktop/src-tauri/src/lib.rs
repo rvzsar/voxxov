@@ -1,0 +1,86 @@
+//! Корневой модуль Tauri-приложения.
+//!
+//! Поднимает плагины, регистрирует команды, инициализирует логгер и
+//! подписывается на broadcast-канал событий для ретрансляции во frontend
+//! через Tauri events.
+
+#![allow(clippy::needless_return)]
+
+mod asr;
+mod commands;
+mod config;
+mod error;
+mod ffmpeg;
+mod logging;
+mod paths;
+mod pipeline;
+mod proxy;
+mod sidecar;
+mod state;
+mod types;
+mod ytdlp;
+
+pub use error::{AppError, AppResult};
+pub use state::AppState;
+pub use types::*;
+
+use tauri::{Emitter, Manager};
+
+/// Точка входа, вызывается из `main.rs`.
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    // Инициализируем логгер максимально рано — чтобы ошибки старта
+    // (например, проблемы с конфигом) попали и в файл, и в stderr.
+    let early_cfg = config::load_or_default();
+    logging::init(&early_cfg.logging);
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            // Загружаем актуальный конфиг (после возможных override-ов из UI)
+            let cfg = config::load_or_default();
+            let state = AppState::new(cfg, app.handle().clone());
+
+            // Подписываемся на канал событий ДО manage, чтобы не потерять
+            // ничего из того, что сгенерируется во время инициализации.
+            let mut events_rx = state.events.subscribe();
+            app.manage(state);
+
+            // Запускаем forwarder: всё, что летит в `state.events`,
+            // пересылается во frontend под именем `job:event`.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match events_rx.recv().await {
+                        Ok(ev) => {
+                            if let Err(e) = handle.emit("job:event", &ev) {
+                                tracing::warn!("emit job:event failed: {e}");
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("events receiver lagged, dropped {n} messages");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+
+            tracing::info!("GigaAM Desktop started");
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::enqueue_url,
+            commands::list_jobs,
+            commands::cancel_job,
+            commands::get_config,
+            commands::save_config,
+            commands::fetch_metadata,
+            commands::diagnose,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
