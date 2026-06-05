@@ -1,0 +1,66 @@
+[package]
+name = "gigaam-desktop"
+description = "GigaAM-V3 desktop: yt-dlp + ffmpeg + ONNX RNN-T"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+default-run = "gigaam-desktop"
+
+[lib]
+name = "gigaam_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "gigaam-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+tauri = { workspace = true }
+tauri-plugin-shell = { workspace = true }
+tauri-plugin-dialog = { workspace = true }
+tauri-plugin-fs = { workspace = true }
+tauri-plugin-store = { workspace = true }
+tauri-plugin-opener = { workspace = true }
+
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+
+directories = { workspace = true }
+config = { workspace = true }
+
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+
+# ONNX / audio (Sprint 3 — пока не используются, но заранее подключены)
+ort = { workspace = true }
+ndarray = { workspace = true }
+tokenizers = { workspace = true }
+hound = { workspace = true }
+symphonia = { workspace = true }
+
+url = { workspace = true }
+
+uuid = { workspace = true }
+chrono = { workspace = true }
+once_cell = { workspace = true }
+parking_lot = { workspace = true }
+
+[features]
+# По умолчанию включаем custom-protocol для релизной сборки
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

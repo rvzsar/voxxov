@@ -1,0 +1,52 @@
+# --- OS / IDE ---
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Logs / env ---
+*.log
+.env
+.env.local
+
+# --- Rust ---
+target/
+**/target/
+**/Cargo.lock.bak
+**/*.rs.bk
+
+# --- Node / frontend ---
+node_modules/
+**/node_modules/
+**/dist/
+**/.svelte-kit/
+**/.vite/
+
+# --- Tauri sidecars (downloaded by CI) ---
+apps/desktop/src-tauri/binaries/
+apps/desktop/src-tauri/gen/schemas/
+
+# --- Models (downloaded by tooling) ---
+models/*.onnx
+models/*.bin
+models/*.pt
+models/*.nemo
+
+# --- Runtime / build artifacts ---
+*.exe
+*.msi
+*.app
+*.dmg
+*.deb
+*.AppImage
+*.tar.gz
+release/
+dist-artifacts/
+
+# --- Local data ---
+*.sqlite
+*.sqlite-journal
+*.tmp
+.cache/
