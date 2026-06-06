@@ -1,11 +1,15 @@
 //! Пути приложения: конфиг, логи, кэш, downloads, transcripts.
-//! Все дефолты указывают на `directories::ProjectConfig`.
+//!
+//! Все пути берутся из Tauri `app_config_dir()` (по `identifier` в
+//! `tauri.conf.json`). Fallback для dev/тестов — `directories`-крейт.
 
 use std::path::PathBuf;
 use tauri::Manager;
 
 const APP_DIR: &str = "GigaAM";
 
+/// Базовая директория приложения. Передавай `Some(&app.handle())` для
+/// продакшн-путей; `None` используется только в dev/тестах.
 fn base(app: Option<&tauri::AppHandle>) -> PathBuf {
     if let Some(handle) = app {
         if let Ok(d) = handle.path().app_config_dir() {
@@ -17,23 +21,39 @@ fn base(app: Option<&tauri::AppHandle>) -> PathBuf {
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().join(".gigaam"))
 }
 
-pub fn app_root(app: Option<&tauri::AppHandle>) -> PathBuf { base(app) }
+pub fn config_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
+    base(app)
+}
 
-pub fn config_dir(app: Option<&tauri::AppHandle>) -> PathBuf { base(app) }
+pub fn logs_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
+    base(app).join("logs")
+}
 
-pub fn logs_dir(app: Option<&tauri::AppHandle>) -> PathBuf { base(app).join("logs") }
+pub fn cache_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
+    base(app).join("cache")
+}
 
-pub fn cache_dir(app: Option<&tauri::AppHandle>) -> PathBuf { base(app).join("cache") }
+pub fn downloads_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
+    base(app).join("downloads")
+}
 
-pub fn downloads_dir(app: Option<&tauri::AppHandle>) -> PathBuf { base(app).join("downloads") }
+pub fn transcripts_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
+    base(app).join("transcripts")
+}
 
-pub fn transcripts_dir(app: Option<&tauri::AppHandle>) -> PathBuf { base(app).join("transcripts") }
-
-pub fn jobs_dir(app: Option<&tauri::AppHandle>) -> PathBuf { base(app).join("jobs") }
+pub fn jobs_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
+    base(app).join("jobs")
+}
 
 pub fn ensure_all(app: &tauri::AppHandle) -> std::io::Result<()> {
-    for d in [config_dir(Some(app)), logs_dir(Some(app)), cache_dir(Some(app)),
-              downloads_dir(Some(app)), transcripts_dir(Some(app)), jobs_dir(Some(app))] {
+    for d in [
+        config_dir(Some(app)),
+        logs_dir(Some(app)),
+        cache_dir(Some(app)),
+        downloads_dir(Some(app)),
+        transcripts_dir(Some(app)),
+        jobs_dir(Some(app)),
+    ] {
         std::fs::create_dir_all(d)?;
     }
     Ok(())

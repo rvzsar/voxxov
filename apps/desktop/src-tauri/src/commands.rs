@@ -5,7 +5,7 @@ use crate::error::{AppError, AppResult};
 use crate::paths;
 use crate::pipeline;
 use crate::state::AppState;
-use crate::types::{FileInfo, Job, JobId, MediaInfo, SidecarStatus};
+use crate::types::{FileInfo, Job, JobId, JobSource, MediaInfo, SidecarStatus};
 use tauri::Manager;
 
 #[tauri::command]
@@ -13,14 +13,41 @@ pub async fn enqueue_url(
     state: tauri::State<'_, AppState>,
     url: String,
 ) -> AppResult<JobId> {
-    let url = url.trim().to_string();
-    if url.is_empty() {
+    enqueue(state, JobSource::Url, url).await
+}
+
+#[tauri::command]
+pub async fn enqueue_local(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> AppResult<JobId> {
+    enqueue(state, JobSource::LocalFile, path).await
+}
+
+/// Общая логика для `enqueue_url` и `enqueue_local`: валидация,
+/// создание Job, spawn pipeline.
+async fn enqueue(
+    state: tauri::State<'_, AppState>,
+    source: JobSource,
+    target: String,
+) -> AppResult<JobId> {
+    let target = target.trim().to_string();
+    if target.is_empty() {
         return Err(AppError::InvalidUrl("empty".into()));
     }
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err(AppError::InvalidUrl(url));
+    match source {
+        JobSource::Url => {
+            if !(target.starts_with("http://") || target.starts_with("https://")) {
+                return Err(AppError::InvalidUrl(target));
+            }
+        }
+        JobSource::LocalFile => {
+            if !std::path::Path::new(&target).is_file() {
+                return Err(AppError::InvalidUrl(format!("file not found: {target}")));
+            }
+        }
     }
-    let job = Job::new(url.clone());
+    let job = Job::new(target, source);
     let id = job.id.clone();
     state.insert_job(job.clone());
     let cfg = state.config();
@@ -102,21 +129,18 @@ async fn scan_dir_recursive(dir: &std::path::Path, out: &mut Vec<FileInfo>) -> A
             Box::pin(scan_dir_recursive(&path, out)).await?;
         } else if file_type.is_file() {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if MEDIA_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                let ext_lower = ext.to_lowercase();
+                if MEDIA_EXTENSIONS.contains(&ext_lower.as_str()) {
                     let name = path
                         .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("unknown")
                         .to_string();
-                    let size = entry
-                        .metadata()
-                        .await
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                    let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
                     out.push(FileInfo {
                         path: path.to_string_lossy().to_string(),
                         name,
-                        extension: ext.to_lowercase(),
+                        extension: ext_lower,
                         size_bytes: size,
                     });
                 }
@@ -127,32 +151,8 @@ async fn scan_dir_recursive(dir: &std::path::Path, out: &mut Vec<FileInfo>) -> A
 }
 
 #[tauri::command]
-pub async fn enqueue_local(
-    state: tauri::State<'_, AppState>,
-    path: String,
-) -> AppResult<JobId> {
-    let path = path.trim().to_string();
-    if path.is_empty() {
-        return Err(AppError::InvalidUrl("empty path".into()));
-    }
-    if !std::path::Path::new(&path).is_file() {
-        return Err(AppError::InvalidUrl(format!("file not found: {}", path)));
-    }
-    let job = Job::new_local(path);
-    let id = job.id.clone();
-    state.insert_job(job.clone());
-    let cfg = state.config();
-    let st = state.inner().clone();
-    tauri::async_runtime::spawn(async move {
-        let _ = pipeline::run_job(st, cfg, job).await;
-    });
-    Ok(id)
-}
-
-#[tauri::command]
 pub fn diagnose(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> SidecarStatus {
-    let cfg = state.config();
-    let bin_dir = crate::sidecar::bin_dir(Some(&app));
+    let _ = state;
     SidecarStatus {
         ytdlp: Some(crate::sidecar::yt_dlp_path(Some(&app)))
             .filter(|p| p.is_file()),

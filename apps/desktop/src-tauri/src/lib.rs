@@ -39,28 +39,26 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
-            // Создаём структуру каталогов сразу, чтобы первый запуск
-            // не падал на записи в `jobs/` или `transcripts/`.
+            // Структура каталогов создаётся до первого обращения к
+            // jobs/transcripts/etc. — иначе первый запуск падает на записи.
             if let Err(e) = paths::ensure_all(&app.handle()) {
                 tracing::warn!("paths::ensure_all failed: {e}");
             }
 
             let state = AppState::new(cfg.clone(), app.handle().clone());
-
-            // Запускаем eager init `yt-dlp` downloader в фоне. При первом
-            // `enqueue_url` он уже будет готов (или init ещё идёт — тогда
-            // `YtDlpRunner::get` подождёт через OnceCell).
             let state_for_init = state.clone();
+
+            // Eager init yt-dlp в фоне. При первом `enqueue_url` он уже
+            // будет готов (или `get()` подождёт через OnceCell).
+            // Ставим state в Tauri ДО spawn, чтобы UI мог через
+            // `app.state::<AppState>()` проверить `state.downloader.get()`.
+            let mut events_rx = state.events.subscribe();
+            app.manage(state);
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = crate::ytdlp::YtDlpRunner::get(&state_for_init).await {
                     tracing::warn!("yt-dlp eager init failed: {e}");
                 }
             });
-
-            // Подписываемся на канал событий ДО manage, чтобы не потерять
-            // ничего из того, что сгенерируется во время инициализации.
-            let mut events_rx = state.events.subscribe();
-            app.manage(state);
 
             // Запускаем forwarder: всё, что летит в `state.events`,
             // пересылается во frontend под именем `job:event`.

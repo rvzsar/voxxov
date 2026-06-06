@@ -39,24 +39,13 @@ pub async fn transcribe(
 
     state.log_line(job_id, format!("ASR: loading model from {}", cfg.model_path));
 
-    // cmd: prefix — fallback to external CLI
+    // cmd: prefix — fallback to external CLI.
     if let Some(cmd) = cfg.model_path.strip_prefix("cmd:") {
         return super::cmd_fallback::transcribe_cmd(state, job_id, audio, cmd).await;
     }
 
-    // К этой точке `cfg.model_path` гарантированно непустой и не `cmd:` —
-    // оба случая отсечены выше. Auto-discovery оставлен как fallback.
-    let model_dir = if cfg.model_path.is_empty() {
-        match auto_discover_model_dir() {
-            Some(d) => d,
-            None => return Err(AppError::Asr("model_path is empty and no models/ directory found near the app".into())),
-        }
-    } else {
-        Path::new(&cfg.model_path).to_path_buf()
-    };
-
-    // 1. Discover model files
-    let (encoder, decoder, joiner, tokens) = discover_model_files(&model_dir)?;
+    // 1. Discover model files.
+    let (encoder, decoder, joiner, tokens) = discover_model_files(&cfg.model_path)?;
     state.log_line(
         job_id,
         format!(
@@ -68,17 +57,18 @@ pub async fn transcribe(
         ),
     );
 
-    // 2. Provider
+    // 2. Provider.
     let provider = match cfg.device {
         crate::config::AsrDevice::Cuda => "cuda",
         crate::config::AsrDevice::Directml => "directml",
+        // Openvino не отличается от cpu в текущей версии sherpa-onnx.
         _ => "cpu",
     };
     let num_threads = num_cpus().min(4);
 
-    // 3. Read WAV в spawn_blocking
+    // 3. Read WAV в spawn_blocking (hound — sync I/O).
     let audio_path = audio.to_path_buf();
-    let audio = tokio::task::spawn_blocking(move || read_wav_samples(&audio_path))
+    let samples = tokio::task::spawn_blocking(move || read_wav_samples(&audio_path))
         .await
         .map_err(|e| AppError::Asr(format!("wav reader join: {e}")))??;
 
@@ -86,16 +76,16 @@ pub async fn transcribe(
         job_id,
         format!(
             "ASR: {} samples @ {}Hz, {:.1}s",
-            audio.samples.len(),
-            audio.sample_rate,
-            audio.duration_sec()
+            samples.samples.len(),
+            samples.sample_rate,
+            samples.duration_sec()
         ),
     );
 
-    // 4. Сегментация
+    // 4. Сегментация.
     let seg_sec = cfg.max_segment_sec.max(1.0);
     let overlap_sec = cfg.overlap_sec.max(0.0);
-    let segments = split_into_segments(&audio.samples, audio.sample_rate, seg_sec, overlap_sec);
+    let segments = split_into_segments(&samples.samples, samples.sample_rate, seg_sec, overlap_sec);
     if segments.is_empty() {
         return Err(AppError::Asr("no audio samples after segmentation".into()));
     }
@@ -111,7 +101,7 @@ pub async fn transcribe(
         );
     }
 
-    // 5. Создать recognizer в spawn_blocking (тяжёлая загрузка ONNX)
+    // 5. Создать recognizer в spawn_blocking (тяжёлая загрузка ONNX).
     state.log_line(
         job_id,
         format!("ASR: creating recognizer (threads={num_threads}, provider={provider})"),
@@ -119,29 +109,28 @@ pub async fn transcribe(
     if cancel.is_cancelled() {
         return Err(AppError::Cancelled);
     }
-    let enc = encoder.clone();
-    let dec = decoder.clone();
-    let join = joiner.clone();
-    let tok = tokens.clone();
-    let beam_size = cfg.beam_size;
-    let engine = tokio::task::spawn_blocking(move || {
-        AsrEngine::new(&enc, &dec, &join, &tok, num_threads, provider, beam_size)
+    let engine = tokio::task::spawn_blocking({
+        let encoder = encoder;
+        let decoder = decoder;
+        let joiner = joiner;
+        let tokens = tokens;
+        let beam_size = cfg.beam_size;
+        move || AsrEngine::new(&encoder, &decoder, &joiner, &tokens, num_threads, provider, beam_size)
     })
     .await
     .map_err(|e| AppError::Asr(format!("recognizer join: {e}")))??;
-
     let engine = Arc::new(engine);
     let total = segments.len();
-    let chunk_dur = audio.samples.len() as f32 / audio.sample_rate as f32;
+    let chunk_dur = samples.samples.len() as f32 / samples.sample_rate as f32;
 
-    // 6. Декодировать каждый сегмент
+    // 6. Декодировать каждый сегмент.
     let mut texts: Vec<String> = Vec::with_capacity(total);
     let mut timed: Vec<super::TimedSegment> = Vec::new();
     for (i, seg) in segments.into_iter().enumerate() {
         if cancel.is_cancelled() {
             return Err(AppError::Cancelled);
         }
-        let seg_dur = seg.samples.len() as f32 / audio.sample_rate as f32;
+        let seg_dur = seg.samples.len() as f32 / samples.sample_rate as f32;
         state.log_line(
             job_id,
             format!(
@@ -192,11 +181,13 @@ pub async fn transcribe(
 
 // --- helpers used both by orchestrator and tests ---
 
-/// Discover encoder, decoder, joiner, and tokens files in a model directory.
+/// Discover encoder, decoder, joiner, и tokens файлы в директории моделей.
+/// `model_path` должен быть директорией, содержащей все 4 файла.
 pub fn discover_model_files(
-    dir: &Path,
+    model_path: &str,
 ) -> AppResult<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)>
 {
+    let dir = std::path::Path::new(model_path);
     if !dir.is_dir() {
         return Err(AppError::Asr(format!(
             "model_path is not a directory: {}",
@@ -227,18 +218,14 @@ pub fn discover_model_files(
         }
     }
 
-    let encoder = encoder.ok_or_else(|| {
-        AppError::Asr(format!("no *encoder*.onnx in {}", dir.display()))
-    })?;
-    let decoder = decoder.ok_or_else(|| {
-        AppError::Asr(format!("no *decoder*.onnx in {}", dir.display()))
-    })?;
-    let joiner = joiner.ok_or_else(|| {
-        AppError::Asr(format!("no *joiner*.onnx in {}", dir.display()))
-    })?;
-    let tokens = tokens.ok_or_else(|| {
-        AppError::Asr(format!("no *tokens.txt in {}", dir.display()))
-    })?;
+    let encoder = encoder
+        .ok_or_else(|| AppError::Asr(format!("no *encoder*.onnx in {}", dir.display())))?;
+    let decoder = decoder
+        .ok_or_else(|| AppError::Asr(format!("no *decoder*.onnx in {}", dir.display())))?;
+    let joiner = joiner
+        .ok_or_else(|| AppError::Asr(format!("no *joiner*.onnx in {}", dir.display())))?;
+    let tokens = tokens
+        .ok_or_else(|| AppError::Asr(format!("no *tokens.txt in {}", dir.display())))?;
 
     Ok((encoder, decoder, joiner, tokens))
 }
@@ -247,35 +234,4 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(2)
-}
-
-fn auto_discover_model_dir() -> Option<std::path::PathBuf> {
-    let candidates = [
-        std::env::current_exe()
-            .ok()
-            .and_then(|e| e.parent().map(|p| p.join("models"))),
-        std::env::current_exe().ok().and_then(|e| {
-            e.parent()
-                .and_then(|p| p.parent())
-                .map(|p| p.join("models"))
-        }),
-        std::env::current_dir().ok().map(|p| p.join("models")),
-    ];
-    for c in candidates.into_iter().flatten() {
-        if c.is_dir() {
-            let has_encoder = std::fs::read_dir(&c)
-                .ok()
-                .map(|entries| {
-                    entries.flatten().any(|e| {
-                        let n = e.file_name().to_string_lossy().to_lowercase();
-                        n.contains("encoder") && n.ends_with(".onnx")
-                    })
-                })
-                .unwrap_or(false);
-            if has_encoder {
-                return Some(c);
-            }
-        }
-    }
-    None
 }

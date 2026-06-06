@@ -1,12 +1,23 @@
 // ===== Tauri-обёртки. В мок-режиме (dev без Rust) возвращают фейки =====
 
-import type { AppConfig, BackendEvent, Job, JobId, MediaInfo } from './types';
+import type {
+  AppConfig,
+  BackendEvent,
+  FileInfo,
+  Job,
+  JobId,
+  MediaInfo,
+} from "./types";
 
-const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+const isTauri =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-async function tInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+async function tInvoke<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
   if (!isTauri) throw new Error(`Tauri backend недоступен (команда: ${cmd})`);
-  const { invoke } = await import('@tauri-apps/api/core');
+  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(cmd, args);
 }
 
@@ -15,7 +26,7 @@ async function tListen<T>(
   handler: (payload: T) => void,
 ): Promise<() => void> {
   if (!isTauri) return () => {};
-  const { listen } = await import('@tauri-apps/api/event');
+  const { listen } = await import("@tauri-apps/api/event");
   const un = await listen<T>(event, (e) => handler(e.payload));
   return un;
 }
@@ -37,17 +48,18 @@ async function mockRunJob(url: string): Promise<JobId> {
   const job: Job = {
     id,
     url,
-    stage: 'queued',
-    progress: { pct: 0, label: 'В очереди…' },
+    source: "url",
+    stage: "queued",
+    progress: { pct: 0, label: "В очереди…" },
     createdAt: new Date().toISOString(),
   };
   MOCK_JOBS.unshift(job);
   (async () => {
-    const stages: Array<{ stage: Job['stage']; label: string; to: number }> = [
-      { stage: 'fetching_metadata', label: 'Получаю метаданные…', to: 0.05 },
-      { stage: 'downloading', label: 'Скачиваю видео (мок)', to: 0.6 },
-      { stage: 'extracting_audio', label: 'Извлекаю аудио (мок)', to: 0.75 },
-      { stage: 'transcribing', label: 'Распознаю речь (мок)', to: 0.99 },
+    const stages: Array<{ stage: Job["stage"]; label: string; to: number }> = [
+      { stage: "fetching_metadata", label: "Получаю метаданные…", to: 0.05 },
+      { stage: "downloading", label: "Скачиваю видео (мок)", to: 0.6 },
+      { stage: "extracting_audio", label: "Извлекаю аудио (мок)", to: 0.75 },
+      { stage: "transcribing", label: "Распознаю речь (мок)", to: 0.99 },
     ];
     for (const s of stages) {
       job.stage = s.stage;
@@ -56,12 +68,46 @@ async function mockRunJob(url: string): Promise<JobId> {
         await delay(120);
       }
     }
-    job.stage = 'done';
-    job.progress = { pct: 1, label: 'Готово' };
-    job.transcriptPreview = 'Это мок-результат. Реальный инференс появится в Sprint 3.';
+    job.stage = "done";
+    job.progress = { pct: 1, label: "Готово" };
+    job.transcriptPreview =
+      "Это мок-результат. Реальный инференс появится в Sprint 3.";
     job.finishedAt = new Date().toISOString();
   })();
   return id;
+}
+
+function mockConfig(): AppConfig {
+  const stored = localStorage.getItem("gigaam:config");
+  if (stored) return JSON.parse(stored);
+  return {
+    proxy: { kind: "none" },
+    download: {
+      format: "bv*+ba/b",
+      maxHeight: 1080,
+      audioOnly: false,
+      embedSubs: false,
+      concurrentFragments: 4,
+      retries: 3,
+      overwrite: false,
+    },
+    asr: {
+      modelPath: "",
+      sampleRate: 16000,
+      language: "ru",
+      device: "cpu",
+      maxSegmentSec: 30,
+      overlapSec: 1,
+      beamSize: 5,
+    },
+    output: {
+      dir: "",
+      formats: ["txt", "srt", "json"],
+      includeTimestamps: true,
+      filenameTemplate: "%(title).150B [%(id)s]",
+    },
+    logging: { level: "info", file: true, maxSizeMb: 5, keepFiles: 3 },
+  };
 }
 
 // ===== Публичный API =====
@@ -71,7 +117,7 @@ export const api = {
 
   async enqueueUrl(url: string): Promise<JobId> {
     if (!isTauri) return mockRunJob(url);
-    return tInvoke<JobId>('enqueue_url', { url });
+    return tInvoke<JobId>("enqueue_url", { url });
   },
 
   async fetchMetadata(url: string): Promise<MediaInfo> {
@@ -80,17 +126,27 @@ export const api = {
       return {
         id: uid(),
         url,
-        title: 'Мок: ' + url,
-        uploader: 'mock',
+        title: "Мок: " + url,
+        uploader: "mock",
         durationSec: 123,
       };
     }
-    return tInvoke<MediaInfo>('fetch_metadata', { url });
+    return tInvoke<MediaInfo>("fetch_metadata", { url });
   },
 
   async listJobs(): Promise<Job[]> {
     if (!isTauri) return [...MOCK_JOBS];
-    return tInvoke<Job[]>('list_jobs');
+    return tInvoke<Job[]>("list_jobs");
+  },
+
+  async scanFolder(path: string): Promise<FileInfo[]> {
+    if (!isTauri) return [];
+    return tInvoke<FileInfo[]>("scan_folder", { path });
+  },
+
+  async enqueueLocal(path: string): Promise<JobId> {
+    if (!isTauri) return mockRunJob(path);
+    return tInvoke<JobId>("enqueue_local", { path });
   },
 
   async cancelJob(id: JobId): Promise<void> {
@@ -99,33 +155,28 @@ export const api = {
       if (i >= 0) MOCK_JOBS.splice(i, 1);
       return;
     }
-    return tInvoke('cancel_job', { id });
+    return tInvoke("cancel_job", { id });
   },
 
   async getConfig(): Promise<AppConfig> {
-    if (!isTauri) {
-      const stored = localStorage.getItem('gigaam:config');
-      if (stored) return JSON.parse(stored);
-      const { DEFAULT_CONFIG } = await import('./types');
-      return DEFAULT_CONFIG;
-    }
-    return tInvoke<AppConfig>('get_config');
+    if (!isTauri) return mockConfig();
+    return tInvoke<AppConfig>("get_config");
   },
 
   async saveConfig(cfg: AppConfig): Promise<void> {
     if (!isTauri) {
-      localStorage.setItem('gigaam:config', JSON.stringify(cfg));
+      localStorage.setItem("gigaam:config", JSON.stringify(cfg));
       return;
     }
-    return tInvoke('save_config', { config: cfg });
+    return tInvoke("save_config", { cfg });
   },
 
   async revealInFolder(path: string): Promise<void> {
     if (!isTauri) {
-      console.warn('[mock] revealInFolder:', path);
+      console.warn("[mock] revealInFolder:", path);
       return;
     }
-    const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+    const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
     return revealItemInDir(path);
   },
 
@@ -134,7 +185,7 @@ export const api = {
     if (!isTauri) return () => {};
     let unsub: (() => void) | null = null;
     let cancelled = false;
-    tListen<BackendEvent>('job:event', handler).then((fn) => {
+    tListen<BackendEvent>("job:event", handler).then((fn) => {
       if (cancelled) fn();
       else unsub = fn;
     });
@@ -144,24 +195,13 @@ export const api = {
     };
   },
 
-  onDownloadProgress(
-    handler: (p: { id: JobId; pct: number; label: string; speed?: string; eta?: string }) => void,
-  ): () => void {
-    if (!isTauri) return () => {};
-    let unsub: (() => void) | null = null;
-    let cancelled = false;
-    tListen('download:progress', handler).then((fn) => {
-      if (cancelled) fn();
-      else unsub = fn;
-    });
-    return () => {
-      cancelled = true;
-      unsub?.();
-    };
-  },
-
-  async diagnose(): Promise<{ ytdlp?: string; ffmpeg?: string; tauri: boolean }> {
-    if (!isTauri) return { tauri: false };
-    return tInvoke('diagnose');
+  async diagnose(): Promise<{
+    ytdlp?: string;
+    ffmpeg?: string;
+    appData: string;
+    appVersion: string;
+  }> {
+    if (!isTauri) return { appData: "", appVersion: "0.0.0-dev" };
+    return tInvoke("diagnose");
   },
 };

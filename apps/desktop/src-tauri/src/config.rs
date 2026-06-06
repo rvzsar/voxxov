@@ -107,8 +107,6 @@ pub enum AsrDevice {
 pub struct OutputConfig {
     pub dir: String,
     pub formats: Vec<String>,
-    pub include_timestamps: bool,
-    pub filename_template: String,
 }
 
 impl Default for OutputConfig {
@@ -116,8 +114,6 @@ impl Default for OutputConfig {
         Self {
             dir: String::new(),
             formats: vec!["txt".to_string(), "srt".to_string(), "json".to_string()],
-            include_timestamps: true,
-            filename_template: "%(title).150B [%(id)s]".to_string(),
         }
     }
 }
@@ -133,7 +129,12 @@ pub struct LoggingConfig {
 
 impl Default for LoggingConfig {
     fn default() -> Self {
-        Self { level: "info".to_string(), file: true, max_size_mb: 5, keep_files: 3 }
+        Self {
+            level: "info".to_string(),
+            file: true,
+            max_size_mb: 5,
+            keep_files: 3,
+        }
     }
 }
 

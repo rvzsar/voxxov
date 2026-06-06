@@ -5,26 +5,30 @@
 //! - Парсинг JSON-метаданных, прогресс-парсинг.
 //! - Cookies, прокси, форматы, кодеки — через fluent API.
 //!
-//! На этом уровне мы только переводим `AppConfig` → `DownloaderBuilder`
-//! и `Video` / events → наши внутренние типы.
+//! На этом уровне мы только переводим `AppConfig` → args + `Video` /
+//! events → наши внутренние типы.
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, DownloadConfig};
 use crate::error::{AppError, AppResult};
-use crate::proxy::to_ytdlp_proxy;
+use crate::proxy;
 use crate::state::AppState;
-use crate::types::MediaInfo;
+use crate::types::{BackendEvent, MediaInfo};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, info};
 use yt_dlp::client::deps::Libraries;
 use yt_dlp::model::Video;
 use yt_dlp::Downloader;
 
 const OUTPUT_BASENAME: &str = "source";
+const DEFAULT_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 GigaAM-Desktop/0.1";
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// Unit struct, namespace для публичных методов. Сам `Downloader`
+/// живёт в `AppState.downloader` (см. `state.rs`).
 pub struct YtDlpRunner;
 
 impl YtDlpRunner {
@@ -43,8 +47,8 @@ impl YtDlpRunner {
             crate::sidecar::ffmpeg_path(Some(&state.app)),
         );
 
-        // Запускаем init через `get_or_init`. OnceCell не умеет
-        // Result-возврат из init closure, поэтому храним Result внутри.
+        // OnceCell не умеет Result-возврат из init closure — храним Result
+        // внутри и пробрасываем в caller.
         let cfg_for_init = cfg.clone();
         let result = state
             .downloader
@@ -66,84 +70,40 @@ impl YtDlpRunner {
     ) -> AppResult<Arc<Downloader>> {
         info!("yt-dlp: initializing (bin dir: {})", bin_dir.display());
 
-        // output_dir в `with_new_binaries` — это default; мы всегда
-        // используем `download_video_to_path`, так что он не критичен.
-        // Ставим `bin_dir`, чтобы случайный `download_video(..)` не
-        // записал в системный PATH.
+        // `output_dir` ставим в `bin_dir`, чтобы случайный `download_video(..)`
+        // (без `to_path`) не записал в системный PATH. Мы всегда
+        // используем `download_video_to_path`, так что это не критично.
         let mut builder = Downloader::with_new_binaries(bin_dir.clone(), bin_dir)
             .await
             .map_err(|e| AppError::Other(format!("yt-dlp init: {e}")))?;
 
-        // Args — ДО `build()`, на builder (мутабельный, не shared).
-        let mut args: Vec<String> = vec![
-            "--no-mtime".into(),
-            "--no-warnings".into(),
-            "--newline".into(),
-            "--retries".into(),
-            cfg.download.retries.to_string(),
-            "--concurrent-fragments".into(),
-            cfg.download.concurrent_fragments.to_string(),
-        ];
-        if cfg.download.audio_only {
-            args.push("-x".into());
-            args.push("--audio-format".into());
-            args.push("wav".into());
-        } else {
-            if !cfg.download.format.is_empty() {
-                args.push("-f".into());
-                args.push(cfg.download.format.clone());
-            }
-            if cfg.download.max_height > 0 {
-                args.push("-S".into());
-                args.push(format!("res:{}", cfg.download.max_height));
-            }
-            if cfg.download.embed_subs {
-                args.push("--embed-subs".into());
-            }
-        }
-        if cfg.download.overwrite {
-            args.push("--force-overwrites".into());
-        } else {
-            args.push("--no-overwrites".into());
-        }
-        if let Some(ua) = cfg.download.user_agent.as_deref() {
-            if !ua.is_empty() {
-                args.push("--user-agent".into());
-                args.push(ua.to_string());
-            }
-        }
-        // Прокси — через `--proxy` arg (а не `with_proxy`), т.к. нет
-        // гарантии, что `DownloaderBuilder` имеет `with_proxy` в этой
-        // версии крейта. URL уже percent-encoded через `ProxyConfig::to_ytdlp_arg()`.
-        if let Some(p) = to_ytdlp_proxy(&cfg.proxy) {
-            args.push("--proxy".into());
-            args.push(p.to_ytdlp_arg());
-        }
-        builder.append_args(args);
+        // Args — до `build()`, на builder (мутабельный, не shared).
+        builder.append_args(build_args(&cfg.download));
+        builder.append_args(proxy::to_args(&cfg.proxy));
 
-        let downloader = builder
+        let mut downloader = builder
             .build()
             .await
             .map_err(|e| AppError::Other(format!("yt-dlp build: {e}")))?;
 
-        // Cookies / proxy / UA / timeout — на `&mut Downloader`. Clone
-        // расшаривает внутреннее состояние через Arc, поэтому настройки
-        // применяются ко всем future-операциям. Это OK, т.к. config
-        // у нас меняется только при рестарте приложения.
-        let mut downloader = downloader;
+        // Cookies / UA / timeout — на `&mut Downloader`. Clone расшаривает
+        // внутреннее состояние через Arc, поэтому настройки применяются
+        // ко всем future-операциям. Config у нас меняется только при
+        // рестарте приложения, так что это OK.
         if let Some(cookies) = cfg.download.cookie_file.as_deref() {
             if !cookies.is_empty() {
                 downloader.set_cookies(cookies);
             }
         }
-        // Таймаут 30 минут на команду.
-        downloader.set_timeout(Duration::from_secs(30 * 60));
-        // UA по умолчанию (если не задан в cfg).
-        if cfg.download.user_agent.as_deref().map(str::is_empty).unwrap_or(true) {
-            downloader.set_user_agent(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 GigaAM-Desktop/0.1",
-            );
-        }
+        // UA: если user задал — используем его; иначе — наш default.
+        let ua = cfg
+            .download
+            .user_agent
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_UA);
+        downloader.set_user_agent(ua);
+        downloader.set_timeout(COMMAND_TIMEOUT);
 
         info!("yt-dlp: ready");
         Ok(Arc::new(downloader))
@@ -177,7 +137,8 @@ impl YtDlpRunner {
             .await
             .map_err(|e| AppError::YtDlp(format!("{e}")))?;
 
-        // 2) Подписка на events.
+        // 2) Подписка на events. `events_task` живёт пока не abort'нем
+        // или пока broadcast::Receiver не вернёт Closed.
         let mut events_rx = downloader.subscribe_events();
         let state_for_events = state.clone();
         let job_id_owned = job_id.to_string();
@@ -205,6 +166,14 @@ impl YtDlpRunner {
         };
 
         // 4) Гонка cancel ↔ download.
+        //
+        //    `Downloader::shutdown()` прерывает ВСЕ текущие загрузки
+        //    в этом Downloader'е. Нам нужен per-job cancel, но в крейте
+        //    `yt-dlp` нет `cancel_download(video_id)` без предварительного
+        //    `download_video_with_priority`, который возвращает download_id.
+        //    Workaround: ставим на job id флаг cancelled, проверяем между
+        //    чанками (если бы были). Сейчас download — одна операция,
+        //    которая не прерывается; ждём её завершения.
         let result = tokio::select! {
             r = download_future => r,
             _ = cancel.cancelled() => {
@@ -214,10 +183,7 @@ impl YtDlpRunner {
             }
         };
 
-        // 5) Завершаем event task.
-        tokio::time::sleep(Duration::from_millis(50)).await;
         events_task.abort();
-
         let path = result?;
         if !path.is_file() {
             return Err(AppError::YtDlp(format!(
@@ -227,6 +193,54 @@ impl YtDlpRunner {
         }
         Ok(path)
     }
+}
+
+/// Собрать CLI-args для yt-dlp из нашего `DownloadConfig`.
+/// Возвращаемый вектор передаётся в `Downloader::append_args` ДО `build()`.
+fn build_args(dl: &DownloadConfig) -> Vec<String> {
+    let mut args = vec![
+        "--no-mtime".to_string(),
+        "--no-warnings".to_string(),
+        "--newline".to_string(),
+        "--retries".to_string(),
+        dl.retries.to_string(),
+        "--concurrent-fragments".to_string(),
+        dl.concurrent_fragments.to_string(),
+    ];
+    if dl.audio_only {
+        args.push("-x".to_string());
+        args.push("--audio-format".to_string());
+        args.push("wav".to_string());
+    } else {
+        if !dl.format.is_empty() {
+            args.push("-f".to_string());
+            args.push(dl.format.clone());
+        } else {
+            // Fallback: пустой format — берём дефолт, иначе yt-dlp
+            // сам выберет «лучший», что не всегда разумно.
+            args.push("-f".to_string());
+            args.push("bv*+ba/b".to_string());
+        }
+        if dl.max_height > 0 {
+            args.push("-S".to_string());
+            args.push(format!("res:{}", dl.max_height));
+        }
+        if dl.embed_subs {
+            args.push("--embed-subs".to_string());
+        }
+    }
+    args.push(if dl.overwrite {
+        "--force-overwrites"
+    } else {
+        "--no-overwrites"
+    }.to_string());
+    if let Some(ua) = dl.user_agent.as_deref() {
+        if !ua.is_empty() {
+            args.push("--user-agent".to_string());
+            args.push(ua.to_string());
+        }
+    }
+    args
 }
 
 fn video_to_media(v: &Video) -> MediaInfo {
@@ -262,7 +276,7 @@ fn forward_event(
             } else {
                 0.0
             };
-            let _ = state.events.send(crate::types::BackendEvent::DownloadProgress {
+            let _ = state.events.send(BackendEvent::DownloadProgress {
                 id: job_id.to_string(),
                 pct,
                 label: "Загрузка".to_string(),
@@ -274,8 +288,8 @@ fn forward_event(
             state.log_line(job_id, format!("yt-dlp: download failed: {error}"));
         }
         E::FormatSelected { format_id, .. } => {
-            state.log_line(job_id, format!("yt-dlp: format selected = {format_id}"));
+            debug!("yt-dlp: format selected = {format_id}");
         }
-        _ => {}
+        _ => debug!("yt-dlp event: {:?}", event.event_type()),
     }
 }

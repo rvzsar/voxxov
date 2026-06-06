@@ -42,7 +42,7 @@ class JobsStore {
         break;
       case "job:updated": {
         this.jobs = this.jobs.map((j) =>
-          j.id === ev.id ? { ...j, ...ev.patch } : j,
+          j.id === ev.id ? { ...j, ...ev.update } : j,
         );
         break;
       }

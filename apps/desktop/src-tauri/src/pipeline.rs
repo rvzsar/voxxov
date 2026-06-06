@@ -6,8 +6,7 @@ use crate::error::{AppError, AppResult};
 use crate::ffmpeg::FfmpegRunner;
 use crate::paths;
 use crate::state::AppState;
-use crate::types::{Job, JobPatch, JobStage, Progress};
-use crate::ytdlp::YtDlpRunner;
+use crate::types::{Job, JobSource, JobStage, JobUpdate, MediaInfo, Progress};
 use chrono::Utc;
 use std::path::PathBuf;
 
@@ -19,14 +18,22 @@ pub async fn run_job(state: AppState, cfg: AppConfig, job: Job) -> AppResult<()>
 
     match result {
         Ok((transcript_path, preview)) => {
-            state.patch_job(&id, JobPatch {
-                stage: Some(JobStage::Done),
-                progress: Some(Progress { pct: 1.0, label: "Готово".into(), speed: None, eta: None }),
-                finished_at: Some(Utc::now().to_rfc3339()),
-                transcript_path: Some(transcript_path.to_string_lossy().to_string()),
-                transcript_preview: Some(preview),
-                error: None,
-            });
+            state.update_job(
+                &id,
+                JobUpdate {
+                    stage: Some(JobStage::Done),
+                    progress: Some(Progress {
+                        pct: 1.0,
+                        label: "Готово".into(),
+                        speed: None,
+                        eta: None,
+                    }),
+                    finished_at: Some(Utc::now().to_rfc3339()),
+                    transcript_path: Some(transcript_path.to_string_lossy().to_string()),
+                    transcript_preview: Some(preview),
+                    error: None,
+                },
+            );
             let _ = state.events.send(crate::types::BackendEvent::JobDone {
                 id: id.clone(),
                 transcript_path: transcript_path.to_string_lossy().to_string(),
@@ -34,31 +41,34 @@ pub async fn run_job(state: AppState, cfg: AppConfig, job: Job) -> AppResult<()>
             });
         }
         Err(e) => {
-            if matches!(e, AppError::Cancelled) {
-                state.patch_job(&id, JobPatch {
-                    stage: Some(JobStage::Cancelled),
-                    progress: Some(Progress { pct: 1.0, label: "Отменено".into(), speed: None, eta: None }),
-                    finished_at: Some(Utc::now().to_rfc3339()),
-                    error: Some("cancelled".into()),
-                    ..Default::default()
-                });
+            let (stage, error_msg) = if matches!(e, AppError::Cancelled) {
+                (JobStage::Cancelled, "cancelled by user".to_string())
             } else {
-                let msg = e.to_string();
-                state.patch_job(&id, JobPatch {
-                    stage: Some(JobStage::Failed),
-                    progress: Some(Progress { pct: 1.0, label: "Ошибка".into(), speed: None, eta: None }),
+                (JobStage::Failed, e.to_string())
+            };
+            state.update_job(
+                &id,
+                JobUpdate {
+                    stage: Some(stage),
+                    progress: Some(Progress {
+                        pct: 1.0,
+                        label: stage_label(&stage).into(),
+                        speed: None,
+                        eta: None,
+                    }),
                     finished_at: Some(Utc::now().to_rfc3339()),
-                    error: Some(msg.clone()),
+                    error: Some(error_msg.clone()),
                     ..Default::default()
-                });
+                },
+            );
+            if !matches!(e, AppError::Cancelled) {
                 let _ = state.events.send(crate::types::BackendEvent::JobFailed {
                     id: id.clone(),
-                    error: msg,
+                    error: error_msg,
                 });
             }
         }
     }
-    state.remove_token(&id);
     Ok(())
 }
 
@@ -68,113 +78,153 @@ async fn run_inner(
     job: &Job,
     token: tokio_util::sync::CancellationToken,
 ) -> AppResult<(PathBuf, String)> {
-    let ffmpeg = FfmpegRunner::resolve(cfg.download.custom_ffmpeg_path.as_deref())?;
+    let ffmpeg = FfmpegRunner::resolve(&state.app, None)?;
 
-    let workdir = state.app_handle()
-        .map(|h| paths::job_workdir(&h, &job.id))
+    let workdir = state
+        .app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("jobs").join(&job.id))
         .unwrap_or_else(|| paths::jobs_dir(None).join(&job.id));
     std::fs::create_dir_all(&workdir)?;
 
-    // 1-2) metadata + source file (URL → yt-dlp, local → direct)
-    let (media, source_file) = if job.source == crate::types::JobSource::LocalFile {
-        let path = std::path::PathBuf::from(&job.url);
-        let name = path.file_stem()
-            .and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+    // 1-2) Metadata + source file (URL → yt-dlp, local → direct).
+    let (media, source_file) = if job.source == JobSource::LocalFile {
+        let path = PathBuf::from(&job.url);
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
         let media = MediaInfo {
-            id: String::new(), url: job.url.clone(), title: name,
-            uploader: None, duration_sec: None, thumbnail: None,
+            id: String::new(),
+            url: job.url.clone(),
+            title: name,
+            uploader: None,
+            duration_sec: None,
+            thumbnail: None,
         };
-        state.patch_job(&job.id, JobPatch {
-            media: Some(media.clone()),
-            progress: Some(Progress { pct: 0.05, label: format!("Локальный файл: {}", media.title), speed: None, eta: None }),
-            ..Default::default()
-        });
+        state.update_job(
+            &job.id,
+            JobUpdate {
+                media: Some(media.clone()),
+                progress: Some(Progress {
+                    pct: 0.05,
+                    label: format!("Локальный файл: {}", media.title),
+                    speed: None,
+                    eta: None,
+                }),
+                ..Default::default()
+            },
+        );
         (media, path)
     } else {
         state.set_stage(&job.id, JobStage::FetchingMetadata, "Получаем метаданные…");
         let media = crate::ytdlp::YtDlpRunner::fetch_metadata(&state, &job.url).await?;
-        state.patch_job(&job.id, JobPatch {
-            media: Some(media.clone()),
-            progress: Some(Progress { pct: 0.05, label: format!("{} · {}", media.title, short_dur(media.duration_sec)), speed: None, eta: None }),
-            ..Default::default()
-        });
-        let st = state.clone();
-        let id = job.id.clone();
-        let url = job.url.clone();
-        let wd = workdir.clone();
-        let cfg2 = cfg.clone();
-        let tk = token.clone();
-        st.set_stage(&id, JobStage::Downloading, "Скачиваем видео…");
-        let downloaded = crate::ytdlp::YtDlpRunner::download(&st, &id, &url, &wd, &cfg2, tk).await?;
+        state.update_job(
+            &job.id,
+            JobUpdate {
+                media: Some(media.clone()),
+                progress: Some(Progress {
+                    pct: 0.05,
+                    label: format!("{} · {}", media.title, short_dur(media.duration_sec)),
+                    speed: None,
+                    eta: None,
+                }),
+                ..Default::default()
+            },
+        );
+        state.set_stage(&job.id, JobStage::Downloading, "Скачиваем видео…");
+        let downloaded = crate::ytdlp::YtDlpRunner::download(
+            &state, &job.id, &job.url, &workdir, cfg, token.clone(),
+        )
+        .await?;
         (media, downloaded)
     };
 
-    // 3) extract audio
+    // 3) Extract audio через ffmpeg.
     let audio_wav = workdir.join("audio.wav");
     {
-        let st = state.clone();
-        let id = job.id.clone();
-        let in_p = source_file.clone();
+        state.set_stage(
+            &job.id,
+            JobStage::ExtractingAudio,
+            "Извлекаем аудио…",
+        );
+        let in_p = source_file;
         let out_p = audio_wav.clone();
         let sr = cfg.asr.sample_rate;
-        let tk = token.clone();
-        st.set_stage(&id, JobStage::ExtractingAudio, "Извлекаем аудио…");
-        let st2 = st.clone();
-        let id2 = id.clone();
-        ffmpeg.extract_audio(
-            &in_p,
-            &out_p,
-            sr,
-            true,
-            tk,
-            move |line| st2.log_line(&id2, format!("ffmpeg: {line}")),
-        ).await?;
+        let st2 = state.clone();
+        let id2 = job.id.clone();
+        ffmpeg
+            .extract_audio(
+                &in_p,
+                &out_p,
+                sr,
+                true,
+                token.clone(),
+                move |line| st2.log_line(&id2, format!("ffmpeg: {line}")),
+            )
+            .await?;
     }
 
-    // 4) transcribe
-    let st2 = state.clone();
-    let id2 = job.id.clone();
-    state.set_stage(&id2, JobStage::Transcribing, "Распознаём речь…");
-    let transcription = asr::transcribe(&st2, &id2, &audio_wav, &cfg.asr, token.clone()).await?;
-    let text = transcription.text.clone();
+    // 4) Transcribe.
+    state.set_stage(&job.id, JobStage::Transcribing, "Распознаём речь…");
+    let transcription = asr::transcribe(
+        &state.clone(),
+        &job.id,
+        &audio_wav,
+        &cfg.asr,
+        token.clone(),
+    )
+    .await?;
+    let text = transcription.text;
     let segments = transcription.segments;
 
-    // 5) write outputs (txt/srt/json) в output dir
-    let out_dir = state.app_handle()
-        .map(|h| paths::transcripts_dir(Some(&h)))
+    // 5) Write outputs (txt/srt/json) в output dir.
+    let out_dir = state
+        .app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("transcripts"))
         .unwrap_or_else(|| paths::transcripts_dir(None));
     std::fs::create_dir_all(&out_dir)?;
-    let base = media.title.clone();
-    let safe = sanitize(&base);
-    let stem = if safe.is_empty() { media.id.clone() } else { safe };
+    let stem = if media.title.is_empty() {
+        media.id.clone()
+    } else {
+        sanitize(&media.title)
+    };
     let mut last_path: Option<PathBuf> = None;
     for fmt in &cfg.output.formats {
         let path = out_dir.join(format!("{stem}.{fmt}"));
         let body = match fmt.as_str() {
             "txt" => text.clone(),
             "srt" => {
-                // Реальные таймстампы если есть, иначе фоллбэк по длине текста.
                 if segments.is_empty() {
                     text_to_srt_fallback(&text)
                 } else {
                     text_to_srt_from_segments(&segments)
                 }
             }
-            "json" => format!("{{\"title\":{:?},\"id\":{:?},\"text\":{:?},\"segments\":[{}]}}\n",
-                              media.title, media.id, text,
-                              segments_to_json(&segments)),
+            "json" => segments_to_json(&media, &text, &segments),
             _ => text.clone(),
         };
         std::fs::write(&path, body)?;
         last_path = Some(path);
     }
 
-    let preview = if text.len() > 280 {
-        let mut end = 280;
-        while !text.is_char_boundary(end) && end > 0 { end -= 1; }
-        format!("{}…", &text[..end])
-    } else { text };
-    Ok((last_path.unwrap_or(out_dir.join(format!("{stem}.txt"))), preview))
+    // Полный текст (без обрезки) — UI сам обрежет при показе.
+    Ok((last_path.unwrap_or(out_dir.join(format!("{stem}.txt"))), text))
+}
+
+fn stage_label(s: &JobStage) -> &'static str {
+    match s {
+        JobStage::Done => "Готово",
+        JobStage::Failed => "Ошибка",
+        JobStage::Cancelled => "Отменено",
+        _ => "",
+    }
 }
 
 fn sanitize(s: &str) -> String {
@@ -190,20 +240,16 @@ fn sanitize(s: &str) -> String {
 }
 
 fn text_to_srt_fallback(text: &str) -> String {
-    // Без per-token timestamps (например, cmd_fallback): оценочная
-    // длительность по кол-ву символов / 150 симв/мин, как раньше.
     if text.trim().is_empty() {
         return String::new();
     }
+    // Без per-token timestamps (cmd_fallback): оценка ~150 симв/мин.
     let duration_sec = ((text.len() as f64 / 150.0) * 60.0).ceil() as u64;
     let end = format_srt_time(duration_sec);
     format!("1\n00:00:00,000 --> {end}\n{text}\n")
 }
 
 fn text_to_srt_from_segments(segments: &[TimedSegment]) -> String {
-    if segments.is_empty() {
-        return String::new();
-    }
     let mut out = String::new();
     for (i, seg) in segments.iter().enumerate() {
         if seg.text.is_empty() {
@@ -212,20 +258,17 @@ fn text_to_srt_from_segments(segments: &[TimedSegment]) -> String {
         let start = format_srt_time_f(seg.start_sec);
         let end = format_srt_time_f(seg.end_sec.max(seg.start_sec + 0.05));
         out.push_str(&format!(
-            "{}\n{} --> {}\n{}\n\n",
-            i + 1,
-            start,
-            end,
-            seg.text
+            "{i}\n{start} --> {end}\n{seg.text}\n\n"
         ));
     }
     out
 }
 
-fn segments_to_json(segments: &[TimedSegment]) -> String {
-    let parts: Vec<String> = segments
+fn segments_to_json(media: &MediaInfo, text: &str, segments: &[TimedSegment]) -> String {
+    let segs: Vec<String> = segments
         .iter()
         .map(|s| {
+            // serde_json::Value::String экранирует кавычки/backslash/etc.
             format!(
                 "{{\"start\":{:.3},\"end\":{:.3},\"text\":{}}}",
                 s.start_sec,
@@ -234,7 +277,13 @@ fn segments_to_json(segments: &[TimedSegment]) -> String {
             )
         })
         .collect();
-    parts.join(",")
+    format!(
+        "{{\"title\":{},\"id\":{},\"text\":{},\"segments\":[{}]}}\n",
+        serde_json::Value::String(media.title.clone()),
+        serde_json::Value::String(media.id.clone()),
+        serde_json::Value::String(text.to_string()),
+        segs.join(","),
+    )
 }
 
 fn format_srt_time(total_sec: u64) -> String {
@@ -254,9 +303,16 @@ fn format_srt_time_f(total_sec: f32) -> String {
 }
 
 fn short_dur(s: Option<u64>) -> String {
-    let s = match s { Some(s) => s, None => return "".to_string() };
+    let s = match s {
+        Some(s) => s,
+        None => return String::new(),
+    };
     let h = s / 3600;
     let m = (s % 3600) / 60;
     let sec = s % 60;
-    if h > 0 { format!("{h}:{:02}:{:02}", m, sec) } else { format!("{m}:{:02}", sec) }
+    if h > 0 {
+        format!("{h}:{m:02}:{sec:02}")
+    } else {
+        format!("{m}:{sec:02}")
+    }
 }

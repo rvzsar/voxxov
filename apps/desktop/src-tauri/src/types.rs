@@ -22,21 +22,6 @@ pub enum JobStage {
     Cancelled,
 }
 
-impl JobStage {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            JobStage::Queued => "queued",
-            JobStage::FetchingMetadata => "fetching_metadata",
-            JobStage::Downloading => "downloading",
-            JobStage::ExtractingAudio => "extracting_audio",
-            JobStage::Transcribing => "transcribing",
-            JobStage::Done => "done",
-            JobStage::Failed => "failed",
-            JobStage::Cancelled => "cancelled",
-        }
-    }
-}
-
 /// Источник задачи: URL или локальный файл.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -46,7 +31,9 @@ pub enum JobSource {
 }
 
 impl Default for JobSource {
-    fn default() -> Self { JobSource::Url }
+    fn default() -> Self {
+        JobSource::Url
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,7 +49,12 @@ pub struct Progress {
 
 impl Default for Progress {
     fn default() -> Self {
-        Self { pct: 0.0, label: String::new(), speed: None, eta: None }
+        Self {
+            pct: 0.0,
+            label: String::new(),
+            speed: None,
+            eta: None,
+        }
     }
 }
 
@@ -80,6 +72,7 @@ pub struct MediaInfo {
     pub thumbnail: Option<String>,
 }
 
+/// Полный снимок задачи, который фронт получает в `JobList`/`LogView`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Job {
@@ -103,12 +96,12 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn new(url: String) -> Self {
+    pub fn new(url: String, source: JobSource) -> Self {
         let now: DateTime<Utc> = Utc::now();
         Self {
             id: Uuid::new_v4().to_string(),
             url,
-            source: JobSource::Url,
+            source,
             stage: JobStage::Queued,
             progress: Progress::default(),
             created_at: now.to_rfc3339(),
@@ -117,29 +110,6 @@ impl Job {
             transcript_path: None,
             transcript_preview: None,
             error: None,
-        }
-    }
-
-    /// Создать задачу для локального файла.
-    pub fn new_local(path: String) -> Self {
-        let now: DateTime<Utc> = Utc::now();
-        let name = std::path::Path::new(&path)
-            .file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
-        Self {
-            id: Uuid::new_v4().to_string(),
-            url: path.clone(),
-            source: JobSource::LocalFile,
-            stage: JobStage::Queued,
-            progress: Progress::default(),
-            created_at: now.to_rfc3339(),
-            finished_at: None,
-            media: Some(MediaInfo {
-                id: String::new(),
-                url: path,
-                title: name,
-                uploader: None, duration_sec: None, thumbnail: None,
-            }),
-            transcript_path: None, transcript_preview: None, error: None,
         }
     }
 }
@@ -154,10 +124,12 @@ pub struct FileInfo {
     pub size_bytes: u64,
 }
 
-/// Patch-объект для инкрементальных обновлений Job.
+/// Полное обновление полей Job. Не «patch» в смысле частичного —
+/// фронт ожидает полные значения. `skip_serializing_if = "Option::is_none"`
+/// нужен только потому, что `MediaInfo` большая и не nullable.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct JobPatch {
+pub struct JobUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<JobStage>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -179,11 +151,19 @@ pub struct JobPatch {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum BackendEvent {
     #[serde(rename = "job:created")]
-    JobCreated { job: Box<Job> },
+    JobCreated {
+        job: Box<Job>,
+    },
     #[serde(rename = "job:updated")]
-    JobUpdated { id: JobId, patch: JobPatch },
+    JobUpdated {
+        id: JobId,
+        update: JobUpdate,
+    },
     #[serde(rename = "job:log")]
-    JobLog { id: JobId, line: String },
+    JobLog {
+        id: JobId,
+        line: String,
+    },
     #[serde(rename = "download:progress")]
     DownloadProgress {
         id: JobId,
@@ -201,7 +181,10 @@ pub enum BackendEvent {
         preview: String,
     },
     #[serde(rename = "job:failed", rename_all = "camelCase")]
-    JobFailed { id: JobId, error: String },
+    JobFailed {
+        id: JobId,
+        error: String,
+    },
 }
 
 /// Информация о доступных sidecar'ах — для команды `diagnose`.

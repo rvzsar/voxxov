@@ -84,8 +84,6 @@ export type AsrConfig = {
 export type OutputConfig = {
   dir: string;
   formats: string[];
-  includeTimestamps: boolean;
-  filenameTemplate: string;
 };
 
 export type LoggingConfig = {
@@ -133,8 +131,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   output: {
     dir: "",
     formats: ["txt", "srt", "json"],
-    includeTimestamps: true,
-    filenameTemplate: "%(title).150B [%(id)s]",
   },
   logging: {
     level: "info",
@@ -148,7 +144,7 @@ export const DEFAULT_CONFIG: AppConfig = {
 
 export type BackendEvent =
   | { kind: "job:created"; job: Job }
-  | { kind: "job:updated"; id: JobId; patch: Partial<Job> }
+  | { kind: "job:updated"; id: JobId; update: Partial<Job> }
   | { kind: "job:log"; id: JobId; line: string }
   | { kind: "job:done"; id: JobId; transcriptPath: string; preview: string }
   | { kind: "job:failed"; id: JobId; error: string }

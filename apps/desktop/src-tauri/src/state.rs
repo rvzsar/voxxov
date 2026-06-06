@@ -1,10 +1,10 @@
 //! Глобальное состояние приложения.
 //!
-//! Хранит карту задач, токены отмены, конфиг и broadcast-канал событий.
-//! Доступ из sync и async кода — через `parking_lot::RwLock`.
+//! Хранит карту задач, токены отмены, конфиг, broadcast-канал событий и
+//! лениво-инициализированный `yt-dlp` downloader.
 
 use crate::config::AppConfig;
-use crate::types::{BackendEvent, Job, JobId, JobPatch, JobStage};
+use crate::types::{BackendEvent, Job, JobId, JobStage, JobUpdate, Progress};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,9 +21,8 @@ pub struct AppState {
     pub config: RwLock<AppConfig>,
     pub events: broadcast::Sender<BackendEvent>,
     pub app: AppHandle,
-    /// Lazy-initialized `yt-dlp` downloader. Stores the init result
-    /// (Ok or Err) so that init failures are cached and surfaced to
-    /// callers without poisoning the cell.
+    /// Lazy-initialized `yt-dlp` downloader. Result-обёртка позволяет
+    /// пробрасывать init-ошибки вызывающим (OnceCell.set не умеет Result).
     pub downloader: Arc<tokio::sync::OnceCell<Result<Arc<yt_dlp::Downloader>, String>>>,
 }
 
@@ -40,8 +39,6 @@ impl AppState {
         }
     }
 
-    pub fn app_handle(&self) -> AppHandle { self.app.clone() }
-
     // ---------------- jobs ----------------
 
     pub fn register_token(&self, id: &str) -> CancellationToken {
@@ -53,28 +50,31 @@ impl AppState {
     pub fn insert_job(&self, job: Job) {
         let id = job.id.clone();
         self.jobs.write().insert(id.clone(), job.clone());
-        let _ = self.events.send(BackendEvent::JobCreated { job: Box::new(job) });
+        let _ = self
+            .events
+            .send(BackendEvent::JobCreated { job: Box::new(job) });
     }
 
-    /// Применить патч к существующей задаче и разослать событие.
-    pub fn patch_job(&self, id: &str, patch: JobPatch) {
+    /// Применить `update` к существующей задаче и разослать событие.
+    /// Если задачи нет — тихо warning (UI просто игнорирует).
+    pub fn update_job(&self, id: &str, update: JobUpdate) {
         let mut jobs = self.jobs.write();
         if let Some(j) = jobs.get_mut(id) {
-            apply_patch(j, &patch);
-            let _ = self.events.send(BackendEvent::JobUpdated {
-                id: id.to_string(),
-                patch,
-            });
+            apply_update(j, &update);
+            let _ = self
+                .events
+                .send(BackendEvent::JobUpdated { id: id.to_string(), update });
         } else {
             drop(jobs);
-            tracing::warn!("patch_job: job {id} not found");
+            tracing::warn!("update_job: job {id} not found");
         }
     }
 
-    /// Установить стадию и (опционально) текстовый label прогресса.
-    /// **Не сбрасывает** `pct`, если оно уже > 0 — прогресс-бар не
-    /// отскакивает назад при переходе между стадиями.
+    /// Установить стадию + label. Сохраняет `progress.pct` если оно
+    /// уже > 0, чтобы прогресс-бар не отскакивал назад при смене
+    /// стадии (например, после `set_stage(Transcribing)`).
     pub fn set_stage(&self, id: &str, stage: JobStage, label: impl Into<String>) {
+        let label = label.into();
         let current_pct = self
             .jobs
             .read()
@@ -86,13 +86,13 @@ impl AppState {
             _ if current_pct > 0.0 => current_pct,
             _ => 0.0,
         };
-        self.patch_job(
+        self.update_job(
             id,
-            JobPatch {
+            JobUpdate {
                 stage: Some(stage),
-                progress: Some(crate::types::Progress {
+                progress: Some(Progress {
                     pct,
-                    label: label.into(),
+                    label,
                     speed: None,
                     eta: None,
                 }),
@@ -101,7 +101,7 @@ impl AppState {
         );
     }
 
-    /// Отправить низкоуровневый лог в frontend (и залогировать в tracing).
+    /// Отправить низкоуровневый лог в frontend (и в tracing).
     pub fn log_line(&self, id: &str, line: impl Into<String>) {
         let line = line.into();
         tracing::info!(job = %id, "{line}");
@@ -125,15 +125,19 @@ impl AppState {
         let token = self.cancel_tokens.write().remove(id);
         if let Some(t) = token {
             t.cancel();
-            self.set_stage(id, JobStage::Cancelled, "Отменено");
+            self.update_job(
+                id,
+                JobUpdate {
+                    stage: Some(JobStage::Cancelled),
+                    finished_at: Some(chrono::Utc::now().to_rfc3339()),
+                    error: Some("cancelled by user".into()),
+                    ..Default::default()
+                },
+            );
             true
         } else {
             false
         }
-    }
-
-    pub fn remove_token(&self, id: &str) {
-        self.cancel_tokens.write().remove(id);
     }
 
     // ---------------- config ----------------
@@ -147,26 +151,30 @@ impl AppState {
     }
 }
 
-fn apply_patch(j: &mut Job, p: &JobPatch) {
-    if let Some(s) = p.stage {
+fn apply_update(j: &mut Job, u: &JobUpdate) {
+    if let Some(s) = u.stage {
         j.stage = s;
     }
-    if let Some(progress) = &p.progress {
-        j.progress = progress.clone();
+    if let Some(progress) = &u.progress {
+        // Защита от отката: если job уже на pct > 0, и новый pct < старого,
+        // игнорируем (UI-баг — прогресс не должен прыгать назад).
+        if !(progress.pct < j.progress.pct && j.progress.pct > 0.0) {
+            j.progress = progress.clone();
+        }
     }
-    if let Some(v) = &p.finished_at {
+    if let Some(v) = &u.finished_at {
         j.finished_at = Some(v.clone());
     }
-    if let Some(m) = &p.media {
+    if let Some(m) = &u.media {
         j.media = Some(m.clone());
     }
-    if let Some(v) = &p.transcript_path {
+    if let Some(v) = &u.transcript_path {
         j.transcript_path = Some(v.clone());
     }
-    if let Some(v) = &p.transcript_preview {
+    if let Some(v) = &u.transcript_preview {
         j.transcript_preview = Some(v.clone());
     }
-    if let Some(v) = &p.error {
+    if let Some(v) = &u.error {
         j.error = Some(v.clone());
     }
 }
