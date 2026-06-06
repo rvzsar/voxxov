@@ -13,7 +13,7 @@ pub fn init(cfg: &LoggingConfig) {
         .with_writer(std::io::stderr)
         .with_target(false)
         .with_thread_ids(false)
-        .with_ansi(cfg.file);
+        .with_ansi(true);
 
     let file_layer = if cfg.file {
         let path = crate::paths::logs_dir(None).join("app.log");
