@@ -1,18 +1,59 @@
 <script lang="ts">
   import { jobsStore } from '../stores/jobs.svelte';
   import { api } from '../api';
+  import { toast } from '../stores/toast.svelte';
   import { stageLabel } from '../format';
 
   const job = $derived(jobsStore.active());
   const logs = $derived(jobsStore.logsFor(jobsStore.activeId));
 
+  let logPre: HTMLPreElement | null = $state(null);
+  let previewExpanded = $state(false);
+
+  // Auto-scroll логов вниз, когда приходят новые строки и пользователь
+  // не скроллил вручную вверх.
+  let userScrolled = $state(false);
+  function onLogScroll() {
+    if (!logPre) return;
+    const atBottom =
+      logPre.scrollHeight - logPre.scrollTop - logPre.clientHeight < 20;
+    userScrolled = !atBottom;
+  }
+  $effect(() => {
+    // Подписка на logs через чтение внутри $effect — при изменении авто-скролл.
+    const _len = logs.length;
+    if (logPre && !userScrolled) {
+      logPre.scrollTop = logPre.scrollHeight;
+    }
+  });
+
   async function openInFolder() {
     if (job?.transcriptPath) {
       try { await api.revealInFolder(job.transcriptPath); } catch (e) {
-        console.error('revealInFolder failed:', e);
+        toast.error('Не удалось открыть папку');
       }
     }
   }
+
+  async function copyTranscript() {
+    if (!job?.transcriptPreview) return;
+    try {
+      await navigator.clipboard.writeText(job.transcriptPreview);
+      toast.success('Скопировано в буфер');
+    } catch {
+      toast.error('Не удалось скопировать');
+    }
+  }
+
+  const previewShort = $derived.by(() => {
+    const t = job?.transcriptPreview?.trim() ?? '';
+    if (previewExpanded || t.length <= 280) return t;
+    // Безопасное обрезание по границе UTF-8 символа
+    let end = 280;
+    while (end > 0 && !t.isCharBoundary(end)) end -= 1;
+    return t.slice(0, end) + '…';
+  });
+  const canExpand = $derived((job?.transcriptPreview?.trim().length ?? 0) > 280);
 </script>
 
 {#if !job}
@@ -53,20 +94,30 @@
       <div class="preview">
         <div class="ph">
           <span class="label">Превью</span>
-          {#if job.transcriptPath}
-            <button class="link" onclick={openInFolder}>открыть файл</button>
-          {/if}
+          <span class="ph-actions">
+            <button class="link" type="button" onclick={copyTranscript}>копировать</button>
+            {#if job.transcriptPath}
+              <span class="sep">·</span>
+              <button class="link" type="button" onclick={openInFolder}>открыть файл</button>
+            {/if}
+          </span>
         </div>
-        <pre>{job.transcriptPreview}</pre>
+        <pre>{previewShort}</pre>
+        {#if canExpand}
+          <button class="more" type="button" onclick={() => (previewExpanded = !previewExpanded)}>
+            {previewExpanded ? 'свернуть' : 'показать полностью'}
+          </button>
+        {/if}
       </div>
     {/if}
 
     {#if logs.length > 0}
       <div class="logs">
         <div class="ph">
-          <span class="label">Лог ({logs.length})</span>
+          <span class="label">Лог ({logs.length}{userScrolled ? ', новее внизу ↓' : ''})</span>
+          <button class="link" type="button" onclick={() => { userScrolled = false; if (logPre) logPre.scrollTop = logPre.scrollHeight; }} title="Прокрутить вниз">↓</button>
         </div>
-        <pre class="log-pre">{logs.join('\n')}</pre>
+        <pre class="log-pre" bind:this={logPre} onscroll={onLogScroll}>{logs.join('\n')}</pre>
       </div>
     {/if}
   </div>
@@ -102,6 +153,14 @@
   pre.log-pre { max-height: 240px; font-size: 11px; color: var(--muted); }
   .preview, .logs { display: flex; flex-direction: column; gap: 4px; }
   .ph { display: flex; justify-content: space-between; align-items: center; }
+  .ph-actions { display: flex; gap: 6px; align-items: center; }
+  .sep { color: var(--muted); }
   .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
-  .link { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; font-size: 11px; }
+  .link { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; font-size: 11px; padding: 0; }
+  .link:hover { text-decoration: underline; }
+  .more {
+    align-self: flex-start; background: none; border: 0;
+    color: var(--accent); cursor: pointer; font-size: 11px; padding: 0;
+  }
+  .more:hover { text-decoration: underline; }
 </style>

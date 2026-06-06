@@ -24,6 +24,10 @@ pub struct AsrEngine {
 
 impl AsrEngine {
     /// Сконструировать recognizer из путей к моделям + provider.
+    /// `beam_size`:
+    ///   1 — `greedy_search` (default, быстро);
+    ///   >1 — `modified_beam_search` с `max_active_paths = beam_size`
+    ///   (clamp в 2..=64).
     pub fn new(
         encoder: &Path,
         decoder: &Path,
@@ -31,6 +35,7 @@ impl AsrEngine {
         tokens: &Path,
         num_threads: usize,
         provider: &str,
+        beam_size: u32,
     ) -> AppResult<Self> {
         let mut config = OfflineRecognizerConfig::default();
         config.model_config.transducer = OfflineTransducerModelConfig {
@@ -42,6 +47,15 @@ impl AsrEngine {
         config.model_config.num_threads = num_threads as i32;
         config.model_config.provider = Some(provider.to_string());
         config.model_config.debug = false;
+
+        let beam = beam_size.clamp(1, 64);
+        if beam <= 1 {
+            config.decoding_method = Some("greedy_search".to_string());
+            config.max_active_paths = 1;
+        } else {
+            config.decoding_method = Some("modified_beam_search".to_string());
+            config.max_active_paths = beam as i32;
+        }
 
         let recognizer = OfflineRecognizer::create(&config).ok_or_else(|| {
             AppError::Asr(

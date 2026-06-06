@@ -28,7 +28,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": ["$APPDATA/transcripts/**", "$APPDATA/jobs/**"]
       }
     }
   },
@@ -46,10 +46,7 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
-    "externalBin": [
-      "binaries/yt-dlp",
-      "binaries/ffmpeg"
-    ],
+    "externalBin": [],
     "resources": [],
     "windows": {
       "webviewInstallMode": {

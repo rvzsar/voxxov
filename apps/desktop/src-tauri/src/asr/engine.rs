@@ -123,8 +123,9 @@ pub async fn transcribe(
     let dec = decoder.clone();
     let join = joiner.clone();
     let tok = tokens.clone();
+    let beam_size = cfg.beam_size;
     let engine = tokio::task::spawn_blocking(move || {
-        AsrEngine::new(&enc, &dec, &join, &tok, num_threads, provider)
+        AsrEngine::new(&enc, &dec, &join, &tok, num_threads, provider, beam_size)
     })
     .await
     .map_err(|e| AppError::Asr(format!("recognizer join: {e}")))??;
