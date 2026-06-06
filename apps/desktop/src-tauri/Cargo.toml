@@ -48,13 +48,15 @@ tracing-appender = { workspace = true }
 sherpa-onnx = { workspace = true }
 hound = { workspace = true }
 
-url = { workspace = true }
+# yt-dlp (GPL-3.0)
+yt-dlp = { workspace = true }
+
+url = "2"
 
 uuid = { workspace = true }
 chrono = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
-which = { workspace = true }
 
 [features]
 # По умолчанию включаем custom-protocol для релизной сборки

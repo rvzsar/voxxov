@@ -1,49 +1,32 @@
-//! Поиск исполняемых файлов yt-dlp и ffmpeg в системе.
-//! Приоритет: custom path из конфига → $PATH → бинарь рядом с exe → known locations.
+//! Где хранить бинари yt-dlp и ffmpeg.
+//!
+//! В режиме разработки (cargo tauri dev) крейт `yt-dlp` сам скачивает
+//! их при первом запуске в `$APPDATA/GigaAM/bin/`. В релизе (tauri build)
+//! можно либо положить их в Tauri resources, либо положиться на
+//! auto-install через крейт (что и происходит сейчас).
 
-use std::path::{Path, PathBuf};
-use which::which;
+use std::path::PathBuf;
 
-pub fn find_ytdlp(custom: Option<&str>) -> Option<PathBuf> {
-    find(custom, "yt-dlp")
-}
-
-pub fn find_ffmpeg(custom: Option<&str>) -> Option<PathBuf> {
-    if let Some(p) = custom {
-        if let Some(found) = probe(Path::new(p)) {
-            return Some(found);
+/// Директория для yt-dlp + ffmpeg.
+/// `None` означает «использовать автоопределение» (через `tauri::path`).
+pub fn bin_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
+    if let Some(handle) = app {
+        if let Ok(d) = handle.path().app_data_dir() {
+            return d.join("bin");
         }
     }
-    for name in ["ffmpeg", "ffmpeg.exe"] {
-        if let Ok(p) = which(name) { return Some(p); }
-    }
-    known_location("ffmpeg.exe")
-        .or_else(|| known_location("ffmpeg"))
+    // Fallback для dev/тестов: ~/.config/GigaAM/bin
+    directories::ProjectDirs::from("dev", "salute", "GigaAM")
+        .map(|p| p.config_dir().parent().unwrap_or(p.config_dir()).join("bin"))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().join(".gigaam/bin"))
 }
 
-fn find(custom: Option<&str>, basename: &str) -> Option<PathBuf> {
-    if let Some(p) = custom {
-        if let Some(found) = probe(Path::new(p)) {
-            return Some(found);
-        }
-    }
-    if let Ok(p) = which(basename) { return Some(p); }
-    known_location(basename)
+pub fn yt_dlp_path(app: Option<&tauri::AppHandle>) -> PathBuf {
+    let name = format!("yt-dlp{}", std::env::consts::EXE_SUFFIX);
+    bin_dir(app).join(name)
 }
 
-fn probe(p: &Path) -> Option<PathBuf> {
-    if p.is_file() { Some(p.to_path_buf()) } else { None }
-}
-
-fn known_location(name: &str) -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        let candidates = [
-            exe.parent().map(|p| p.join(name)),
-            exe.parent().and_then(|p| p.parent()).map(|p| p.join("resources").join(name)),
-        ];
-        for c in candidates.into_iter().flatten() {
-            if c.is_file() { return Some(c); }
-        }
-    }
-    None
+pub fn ffmpeg_path(app: Option<&tauri::AppHandle>) -> PathBuf {
+    let name = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
+    bin_dir(app).join(name)
 }

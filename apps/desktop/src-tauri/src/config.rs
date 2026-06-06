@@ -46,11 +46,6 @@ pub struct DownloadConfig {
     pub concurrent_fragments: u32,
     pub retries: u32,
     pub overwrite: bool,
-    pub output_template: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub custom_ytdlp_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub custom_ffmpeg_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cookie_file: Option<String>,
     pub user_agent: Option<String>,
@@ -66,9 +61,6 @@ impl Default for DownloadConfig {
             concurrent_fragments: 4,
             retries: 3,
             overwrite: false,
-            output_template: "%(title).150B [%(id)s].%(ext)s".to_string(),
-            custom_ytdlp_path: None,
-            custom_ffmpeg_path: None,
             cookie_file: None,
             user_agent: None,
         }
@@ -79,7 +71,6 @@ impl Default for DownloadConfig {
 #[serde(default, rename_all = "camelCase")]
 pub struct AsrConfig {
     pub model_path: String,
-    pub tokens_path: String,
     pub sample_rate: u32,
     pub language: String,
     pub device: AsrDevice,
@@ -92,7 +83,6 @@ impl Default for AsrConfig {
     fn default() -> Self {
         Self {
             model_path: String::new(),
-            tokens_path: String::new(),
             sample_rate: 16000,
             language: "ru".to_string(),
             device: AsrDevice::Cpu,
@@ -160,7 +150,7 @@ pub struct AppConfig {
 // ---------------- file IO ----------------
 
 pub fn config_path() -> PathBuf {
-    paths::config_dir().join("config.toml")
+    paths::config_dir(None).join("config.toml")
 }
 
 pub fn load_or_default() -> AppConfig {

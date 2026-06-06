@@ -7,6 +7,7 @@ use crate::config::AppConfig;
 use crate::types::{BackendEvent, Job, JobId, JobPatch, JobStage};
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tauri::AppHandle;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -20,6 +21,10 @@ pub struct AppState {
     pub config: RwLock<AppConfig>,
     pub events: broadcast::Sender<BackendEvent>,
     pub app: AppHandle,
+    /// Lazy-initialized `yt-dlp` downloader. Stores the init result
+    /// (Ok or Err) so that init failures are cached and surfaced to
+    /// callers without poisoning the cell.
+    pub downloader: Arc<tokio::sync::OnceCell<Result<Arc<yt_dlp::Downloader>, String>>>,
 }
 
 impl AppState {
@@ -31,6 +36,7 @@ impl AppState {
             config: RwLock::new(config),
             events: tx,
             app,
+            downloader: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 

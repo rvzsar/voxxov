@@ -1,52 +1,52 @@
 // ===== Базовые типы, общие для фронта и бэка =====
+// Имена полей — camelCase, соответствуют serde(rename_all) в Rust.
 
 export type JobId = string;
 export type JobStage =
-  | 'queued'
-  | 'fetching_metadata'
-  | 'downloading'
-  | 'extracting_audio'
-  | 'transcribing'
-  | 'done'
-  | 'failed'
-  | 'cancelled';
+  | "queued"
+  | "fetching_metadata"
+  | "downloading"
+  | "extracting_audio"
+  | "transcribing"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export type JobSource = "url" | "local_file";
 
 export type JobProgress = {
-  /** 0..1 */
   pct: number;
-  /** Человекочитаемая подпись, например "Скачивание 12.3 MB / 48 MB" */
   label: string;
-  /** Скорость скачивания (если применимо) */
   speed?: string;
-  /** ETA (если применимо) */
   eta?: string;
 };
 
 export type MediaInfo = {
   id: string;
+  url: string;
   title: string;
   uploader?: string;
   durationSec?: number;
-  thumbnailUrl?: string;
-  url: string;
+  thumbnail?: string;
 };
 
 export type Job = {
   id: JobId;
   url: string;
+  source: JobSource;
   stage: JobStage;
   progress: JobProgress;
-  media?: MediaInfo;
-  /** Путь к распознанному тексту (.txt / .srt) */
-  transcriptPath?: string;
-  /** Краткий превью текста (первые ~200 символов) */
-  transcriptPreview?: string;
-  error?: string;
   createdAt: string;
   finishedAt?: string;
+  media?: MediaInfo;
+  transcriptPath?: string;
+  transcriptPreview?: string;
+  error?: string;
 };
 
-export type ProxyKind = 'none' | 'http' | 'https' | 'socks5';
+// ===== Конфиг — mirror of Rust config.rs =====
+
+export type ProxyKind = "none" | "http" | "https" | "socks5";
 
 export type ProxyConfig = {
   kind: ProxyKind;
@@ -54,57 +54,52 @@ export type ProxyConfig = {
   port?: number;
   username?: string;
   password?: string;
-  /** Обход прокси для доменов (через запятую) */
   noProxy?: string;
 };
 
 export type DownloadConfig = {
-  /** Формат yt-dlp merge_output, например "bv*+ba/b" */
   format: string;
-  /** Максимальная высота (720, 1080) или null = без лимита */
-  maxHeight?: number | null;
-  /** Скачивать только аудио (без видео) */
+  maxHeight: number;
   audioOnly: boolean;
-  /** Ограничить размер файла, например "500M" */
-  maxFilesize?: string;
-  /** Доп. аргументы yt-dlp */
-  extraArgs: string[];
-  /** Cookies-файл (Netscape) */
-  cookiesFile?: string;
+  embedSubs: boolean;
+  concurrentFragments: number;
+  retries: number;
+  overwrite: boolean;
+  cookieFile?: string;
+  userAgent?: string;
 };
 
+export type AsrDevice = "cpu" | "cuda" | "directml" | "openvino";
+
 export type AsrConfig = {
-  /** Путь к папке с ONNX-моделями */
-  modelDir: string;
-  /** Размер пре-трансформера: nvidia/salute-ai/GigaAM-V3 — варианты RNN-T */
-  modelVariant: 'v3_rnnt' | 'v3_ctc' | 'v3_e2e';
-  /** Устройство инференса */
-  device: 'cpu' | 'openvino_cpu' | 'openvino_gpu' | 'openvino_npu';
-  /** Число потоков CPU для OpenVINO */
-  threads: number;
-  /** Длина чанка в секундах (для длинных аудио) */
-  chunkLengthSec: number;
-  /** Сколько оверлапа (в секундах) между чанками */
-  chunkOverlapSec: number;
-  /** Использовать VAD (Silero) для пропуска тишины */
-  useVad: boolean;
+  modelPath: string;
+  sampleRate: number;
+  language: string;
+  device: AsrDevice;
+  maxSegmentSec: number;
+  overlapSec: number;
+  beamSize: number;
 };
 
 export type OutputConfig = {
-  /** Форматы вывода: txt / srt / json / vtt */
-  formats: Array<'txt' | 'srt' | 'json' | 'vtt'>;
-  /** Максимальная длина строки для txt */
-  maxLineLength: number;
-  /** Папка для сохранения результатов (пустая = <downloads>/transcripts) */
-  outputDir?: string;
+  dir: string;
+  formats: string[];
+  includeTimestamps: boolean;
+  filenameTemplate: string;
 };
 
 export type LoggingConfig = {
-  level: 'error' | 'warn' | 'info' | 'debug' | 'trace';
-  /** Хранить лог-файл */
+  level: string;
   file: boolean;
-  /** Максимальный размер лог-файла, MB */
-  maxFileSizeMb: number;
+  maxSizeMb: number;
+  keepFiles: number;
+};
+
+export type FileInfo = {
+  path: string;
+  name: string;
+  extension: string;
+  sizeBytes: number;
 };
 
 export type AppConfig = {
@@ -113,46 +108,55 @@ export type AppConfig = {
   asr: AsrConfig;
   output: OutputConfig;
   logging: LoggingConfig;
-  /** Тема UI */
-  theme: 'auto' | 'dark' | 'light';
 };
 
 export const DEFAULT_CONFIG: AppConfig = {
-  proxy: { kind: 'none' },
+  proxy: { kind: "none" },
   download: {
-    format: 'bv*+ba/b',
+    format: "bv*+ba/b",
     maxHeight: 1080,
     audioOnly: false,
-    maxFilesize: '2G',
-    extraArgs: [],
+    embedSubs: false,
+    concurrentFragments: 4,
+    retries: 3,
+    overwrite: false,
   },
   asr: {
-    modelDir: '',
-    modelVariant: 'v3_rnnt',
-    device: 'openvino_cpu',
-    threads: 8,
-    chunkLengthSec: 20,
-    chunkOverlapSec: 2,
-    useVad: true,
+    modelPath: "",
+    sampleRate: 16000,
+    language: "ru",
+    device: "cpu",
+    maxSegmentSec: 30,
+    overlapSec: 1,
+    beamSize: 5,
   },
   output: {
-    formats: ['txt', 'srt'],
-    maxLineLength: 90,
+    dir: "",
+    formats: ["txt", "srt", "json"],
+    includeTimestamps: true,
+    filenameTemplate: "%(title).150B [%(id)s]",
   },
   logging: {
-    level: 'info',
+    level: "info",
     file: true,
-    maxFileSizeMb: 20,
+    maxSizeMb: 5,
+    keepFiles: 3,
   },
-  theme: 'auto',
 };
 
 // ===== События от бэка (Tauri events) =====
 
 export type BackendEvent =
-  | { kind: 'job:created'; job: Job }
-  | { kind: 'job:updated'; id: JobId; patch: Partial<Job> }
-  | { kind: 'job:log'; id: JobId; line: string }
-  | { kind: 'job:done'; id: JobId; transcriptPath: string; preview: string }
-  | { kind: 'job:failed'; id: JobId; error: string }
-  | { kind: 'download:progress'; id: JobId; pct: number; label: string; speed?: string; eta?: string };
+  | { kind: "job:created"; job: Job }
+  | { kind: "job:updated"; id: JobId; patch: Partial<Job> }
+  | { kind: "job:log"; id: JobId; line: string }
+  | { kind: "job:done"; id: JobId; transcriptPath: string; preview: string }
+  | { kind: "job:failed"; id: JobId; error: string }
+  | {
+      kind: "download:progress";
+      id: JobId;
+      pct: number;
+      label: string;
+      speed?: string;
+      eta?: string;
+    };

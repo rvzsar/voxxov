@@ -112,10 +112,10 @@
       <label>Макс. высота<input type="number" min="0" max="4320" step="1" value={dl.maxHeight} oninput={(e) => updateDl({ maxHeight: Number((e.currentTarget as HTMLInputElement).value) || 0 })} /></label>
       <label>Параллельно<input type="number" min="1" max="16" value={dl.concurrentFragments} oninput={(e) => updateDl({ concurrentFragments: Math.max(1, Math.min(16, Number((e.currentTarget as HTMLInputElement).value) || 1)) })} /></label>
       <label>Повторы<input type="number" min="0" max="10" value={dl.retries} oninput={(e) => updateDl({ retries: Math.max(0, Math.min(10, Number((e.currentTarget as HTMLInputElement).value) || 0)) })} /></label>
-      <label class="full">Шаблон имени<input type="text" value={dl.outputTemplate} placeholder="%(title).150B [%(id)s].%(ext)s" oninput={(e) => updateDl({ outputTemplate: (e.currentTarget as HTMLInputElement).value })} /></label>
+      <label class="full">Шаблон имени не настраивается: yt-dlp крейт сам выбирает имя из метаданных
+      <input type="text" value="source" disabled />
       <label class="full">Cookies (путь к .txt)<input type="text" value={dl.cookieFile ?? ''} oninput={(e) => updateDl({ cookieFile: (e.currentTarget as HTMLInputElement).value || undefined })} /></label>
-      <label class="full">yt-dlp путь (пусто = PATH)<input type="text" value={dl.customYtdlpPath ?? ''} oninput={(e) => updateDl({ customYtdlpPath: (e.currentTarget as HTMLInputElement).value || undefined })} /></label>
-      <label class="full">ffmpeg путь (пусто = PATH)<input type="text" value={dl.customFfmpegPath ?? ''} oninput={(e) => updateDl({ customFfmpegPath: (e.currentTarget as HTMLInputElement).value || undefined })} /></label>
+      <label class="full">User-Agent (пусто = default)<input type="text" value={dl.userAgent ?? ''} placeholder="Mozilla/5.0 ..." oninput={(e) => updateDl({ userAgent: (e.currentTarget as HTMLInputElement).value || undefined })} /></label>
       <label class="check"><input type="checkbox" checked={dl.audioOnly} onchange={(e) => updateDl({ audioOnly: (e.currentTarget as HTMLInputElement).checked })} />Только аудио</label>
       <label class="check"><input type="checkbox" checked={dl.embedSubs} onchange={(e) => updateDl({ embedSubs: (e.currentTarget as HTMLInputElement).checked })} />Вшить субтитры</label>
       <label class="check"><input type="checkbox" checked={dl.overwrite} onchange={(e) => updateDl({ overwrite: (e.currentTarget as HTMLInputElement).checked })} />Перезапись</label>

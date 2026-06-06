@@ -10,7 +10,7 @@
 - **Rust** — оркестрация, скачивание, ffmpeg-обвязка, ASR.
 - **Svelte 5** (runes) + **Vite** + **TypeScript** — UI.
 - **yt-dlp** + **ffmpeg** — внешние sidecar-бинари.
-- **GigaAM v3** — Python-сабпроцесс (или подключаемый CLI).
+- **GigaAM v3** — нативный Rust-инференс через ONNX Runtime (`ort` crate).
 
 ## Железо (target)
 
@@ -28,28 +28,35 @@
 │   └── src-tauri/          # Rust-бэкенд
 │       ├── src/            # modules: config, pipeline, ytdlp, ffmpeg, asr, ...
 │       └── tauri.conf.json
-├── scripts/                # install-sidecars.ps1, dev.cmd, setup-gigaam.cmd
-├── models/                 # сюда скачиваются модели GigaAM
+├── scripts/                # install-sidecars.ps1, dev.cmd
+├── models/                 # сюда кладутся ONNX-модели GigaAM
 └── .github/workflows/      # CI/CD
 ```
 
 ## Быстрый старт
 
-1. Поставить зависимости:
-
-    ```powershell
-    pwsh scripts/install-sidecars.ps1   # yt-dlp + ffmpeg в ./sidecars
-    pwsh scripts/setup-gigaam.cmd       # Python venv + gigaam (опционально)
-    ```
-
-2. Указать пути к бинарям и модели в `Settings` UI (или в
-   `%APPDATA%/GigaAM/config.toml`).
-
-3. Запустить dev-режим:
+1. Запустить dev-режим (yt-dlp + ffmpeg скачаются автоматически при
+   первой задаче в `$APPDATA/GigaAM/bin/`):
 
     ```cmd
     scripts\dev.cmd
     ```
+
+2. Скачать ONNX-модель GigaAM v3 и токенизатор, указать пути в `Settings` UI
+   (или в `%APPDATA%/GigaAM/config.toml`).
+
+## Sidecars
+
+yt-dlp и ffmpeg **не поставляются в бинарь** приложения и не требуют
+ручной установки. Крейт `yt-dlp` (GPL-3.0) скачивает их сам при первом
+использовании и кладёт в:
+
+- **Windows**: `%APPDATA%\com.gigaam.desktop\bin\`
+- **Linux**: `~/.local/share/com.gigaam.desktop/bin/`
+- **macOS**: `~/Library/Application Support/com.gigaam.desktop/bin/`
+
+Если нужно указать другой путь (например, системный yt-dlp) — создайте
+`bin/yt-dlp[.exe]` и `bin/ffmpeg[.exe]` в нужной директории до запуска.
 
 ## Конфигурация
 
@@ -101,4 +108,9 @@ GigaAM-V3 распространяется под **GigaAM License (non-commerci
 
 ## Лицензия кода
 
-MIT — см. [LICENSE](./LICENSE).
+**GPL-3.0-only** — см. [LICENSE](./LICENSE).
+
+Использование крейта `yt-dlp` ([boul2gom/yt-dlp](https://github.com/boul2gom/yt-dlp))
+также под GPL-3.0, поэтому весь проект — GPL-3.0.
+
+Salute GigaAM модели — non-commercial (см. выше).

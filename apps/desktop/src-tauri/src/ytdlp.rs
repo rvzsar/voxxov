@@ -1,212 +1,281 @@
-//! Запуск yt-dlp: метаданные, скачивание, парсинг прогресса.
+//! Обёртка над крейтом `yt-dlp` (GPL-3.0).
+//!
+//! Крейт берёт на себя:
+//! - Скачивание и обновление yt-dlp + ffmpeg под текущую платформу.
+//! - Парсинг JSON-метаданных, прогресс-парсинг.
+//! - Cookies, прокси, форматы, кодеки — через fluent API.
+//!
+//! На этом уровне мы только переводим `AppConfig` → `DownloaderBuilder`
+//! и `Video` / events → наши внутренние типы.
 
 use crate::config::AppConfig;
 use crate::error::{AppError, AppResult};
-use crate::proxy::build as build_proxy;
-use crate::sidecar;
+use crate::proxy::to_ytdlp_proxy;
 use crate::state::AppState;
-use crate::types::{MediaInfo, Progress};
+use crate::types::MediaInfo;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
+use tracing::info;
+use yt_dlp::client::deps::Libraries;
+use yt_dlp::model::Video;
+use yt_dlp::Downloader;
 
-pub struct YtDlpRunner {
-    pub bin: PathBuf,
-}
+const OUTPUT_BASENAME: &str = "source";
+
+pub struct YtDlpRunner;
 
 impl YtDlpRunner {
-    pub fn resolve(cfg: &AppConfig) -> AppResult<Self> {
-        let bin = sidecar::find_ytdlp(cfg.download.custom_ytdlp_path.as_deref())
-            .ok_or_else(|| AppError::Sidecar("yt-dlp not found".into()))?;
-        Ok(Self { bin })
+    /// Получить downloader из `AppState`, инициализируя при первом вызове.
+    /// При первом вызове крейт `yt-dlp` скачает yt-dlp+ffmpeg в
+    /// `$APPDATA/GigaAM/bin/` (может занять несколько секунд).
+    pub async fn get(state: &AppState) -> AppResult<Arc<Downloader>> {
+        let cfg = state.config();
+        let bin_dir = crate::sidecar::bin_dir(Some(&state.app));
+        std::fs::create_dir_all(&bin_dir).map_err(|e| {
+            AppError::Other(format!("create bin dir {}: {e}", bin_dir.display()))
+        })?;
+
+        let libraries = Libraries::new(
+            crate::sidecar::yt_dlp_path(Some(&state.app)),
+            crate::sidecar::ffmpeg_path(Some(&state.app)),
+        );
+
+        // Запускаем init через `get_or_init`. OnceCell не умеет
+        // Result-возврат из init closure, поэтому храним Result внутри.
+        let cfg_for_init = cfg.clone();
+        let result = state
+            .downloader
+            .get_or_init(|| async {
+                Self::init(bin_dir, libraries, &cfg_for_init)
+                    .await
+                    .map_err(|e| e.to_string())
+            })
+            .await;
+        result
+            .clone()
+            .map_err(|msg| AppError::Other(format!("yt-dlp: {msg}")))
     }
 
-    pub async fn fetch_metadata(&self, url: &str) -> AppResult<MediaInfo> {
-        let mut cmd = Command::new(&self.bin);
-        cmd.arg("--dump-single-json")
-            .arg("--no-warnings")
-            .arg("--no-playlist")
-            .arg(url);
-        let out = cmd.output().await.map_err(|e| AppError::YtDlp(format!("spawn: {e}")))?;
-        if !out.status.success() {
-            return Err(AppError::YtDlp(String::from_utf8_lossy(&out.stderr).to_string()));
+    async fn init(
+        bin_dir: PathBuf,
+        libraries: Libraries,
+        cfg: &AppConfig,
+    ) -> AppResult<Arc<Downloader>> {
+        info!("yt-dlp: initializing (bin dir: {})", bin_dir.display());
+
+        // output_dir в `with_new_binaries` — это default; мы всегда
+        // используем `download_video_to_path`, так что он не критичен.
+        // Ставим `bin_dir`, чтобы случайный `download_video(..)` не
+        // записал в системный PATH.
+        let mut builder = Downloader::with_new_binaries(bin_dir.clone(), bin_dir)
+            .await
+            .map_err(|e| AppError::Other(format!("yt-dlp init: {e}")))?;
+
+        // Args — ДО `build()`, на builder (мутабельный, не shared).
+        let mut args: Vec<String> = vec![
+            "--no-mtime".into(),
+            "--no-warnings".into(),
+            "--newline".into(),
+            "--retries".into(),
+            cfg.download.retries.to_string(),
+            "--concurrent-fragments".into(),
+            cfg.download.concurrent_fragments.to_string(),
+        ];
+        if cfg.download.audio_only {
+            args.push("-x".into());
+            args.push("--audio-format".into());
+            args.push("wav".into());
+        } else {
+            if !cfg.download.format.is_empty() {
+                args.push("-f".into());
+                args.push(cfg.download.format.clone());
+            }
+            if cfg.download.max_height > 0 {
+                args.push("-S".into());
+                args.push(format!("res:{}", cfg.download.max_height));
+            }
+            if cfg.download.embed_subs {
+                args.push("--embed-subs".into());
+            }
         }
-        let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-        Ok(MediaInfo {
-            id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            url: url.to_string(),
-            title: v.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            uploader: v.get("uploader").and_then(|x| x.as_str())
-                .or_else(|| v.get("channel").and_then(|x| x.as_str()))
-                .map(|s| s.to_string()),
-            duration_sec: v.get("duration").and_then(|x| x.as_f64()).map(|f| f as u64),
-            thumbnail: v.get("thumbnail").and_then(|x| x.as_str()).map(|s| s.to_string()),
-        })
+        if cfg.download.overwrite {
+            args.push("--force-overwrites".into());
+        } else {
+            args.push("--no-overwrites".into());
+        }
+        if let Some(ua) = cfg.download.user_agent.as_deref() {
+            if !ua.is_empty() {
+                args.push("--user-agent".into());
+                args.push(ua.to_string());
+            }
+        }
+        // Прокси — через `--proxy` arg (а не `with_proxy`), т.к. нет
+        // гарантии, что `DownloaderBuilder` имеет `with_proxy` в этой
+        // версии крейта. URL уже percent-encoded через `ProxyConfig::to_ytdlp_arg()`.
+        if let Some(p) = to_ytdlp_proxy(&cfg.proxy) {
+            args.push("--proxy".into());
+            args.push(p.to_ytdlp_arg());
+        }
+        builder.append_args(args);
+
+        let downloader = builder
+            .build()
+            .await
+            .map_err(|e| AppError::Other(format!("yt-dlp build: {e}")))?;
+
+        // Cookies / proxy / UA / timeout — на `&mut Downloader`. Clone
+        // расшаривает внутреннее состояние через Arc, поэтому настройки
+        // применяются ко всем future-операциям. Это OK, т.к. config
+        // у нас меняется только при рестарте приложения.
+        let mut downloader = downloader;
+        if let Some(cookies) = cfg.download.cookie_file.as_deref() {
+            if !cookies.is_empty() {
+                downloader.set_cookies(cookies);
+            }
+        }
+        // Таймаут 30 минут на команду.
+        downloader.set_timeout(Duration::from_secs(30 * 60));
+        // UA по умолчанию (если не задан в cfg).
+        if cfg.download.user_agent.as_deref().map(str::is_empty).unwrap_or(true) {
+            downloader.set_user_agent(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 GigaAM-Desktop/0.1",
+            );
+        }
+
+        info!("yt-dlp: ready");
+        Ok(Arc::new(downloader))
     }
 
-    /// Скачать видео в `out_dir` (формат задаётся `output_template`).
+    /// Fetch метаданных для URL.
+    pub async fn fetch_metadata(state: &AppState, url: &str) -> AppResult<MediaInfo> {
+        let downloader = Self::get(state).await?;
+        let v = downloader
+            .fetch_video_infos(url)
+            .await
+            .map_err(|e| AppError::YtDlp(format!("{e}")))?;
+        Ok(video_to_media(&v))
+    }
+
+    /// Скачать видео в `out_dir`. Возвращает путь к скачанному файлу.
     pub async fn download(
-        &self,
         state: &AppState,
         job_id: &str,
         url: &str,
         out_dir: &Path,
-        template: &str,
         cfg: &AppConfig,
         cancel: CancellationToken,
     ) -> AppResult<PathBuf> {
-        std::fs::create_dir_all(out_dir)?;
+        let downloader = Self::get(state).await?;
+        std::fs::create_dir_all(out_dir).map_err(AppError::Io)?;
 
-        let proxy = build_proxy(&cfg.proxy);
-        let mut cmd = Command::new(&self.bin);
-        cmd.current_dir(out_dir)
-            .arg("--newline")
-            .arg("--no-playlist")
-            .arg("--no-part")
-            .arg("--no-mtime")
-            .arg("--no-warnings")
-            .arg("--progress")
-            .arg("--progress-template")
-            .arg("download:PROGRESS:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._downloaded_bytes_str)s|%(progress._total_bytes_str)s");
+        // 1) Fetch метаданных.
+        let video = downloader
+            .fetch_video_infos(url)
+            .await
+            .map_err(|e| AppError::YtDlp(format!("{e}")))?;
 
-        for a in &proxy.args { cmd.arg(a); }
-        if cfg.download.audio_only {
-            cmd.arg("-x").arg("--audio-format").arg("wav");
-        } else {
-            cmd.arg("-f").arg(&cfg.download.format);
-            if cfg.download.max_height > 0 {
-                cmd.arg("-S").arg(format!("res:{}", cfg.download.max_height));
-            }
-            if cfg.download.embed_subs {
-                cmd.arg("--embed-subs");
-            }
-        }
-        if let Some(ua) = &cfg.download.user_agent {
-            if !ua.is_empty() { cmd.arg("--user-agent").arg(ua); }
-        }
-        if let Some(cookies) = &cfg.download.cookie_file {
-            if !cookies.is_empty() { cmd.arg("--cookies").arg(cookies); }
-        }
-        cmd.arg("-o").arg(template);
-        cmd.arg("--retries").arg(cfg.download.retries.to_string());
-        cmd.arg("--concurrent-fragments").arg(cfg.download.concurrent_fragments.to_string());
-        if cfg.download.overwrite { cmd.arg("--force-overwrites"); } else { cmd.arg("--no-overwrites"); }
-        cmd.arg(url);
-
-        for (k, v) in &proxy.env { cmd.env(k, v); }
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        let mut child = cmd.spawn().map_err(|e| AppError::YtDlp(format!("spawn: {e}")))?;
-        let stdout = child.stdout.take().ok_or_else(|| AppError::YtDlp("no stdout".into()))?;
-        let stderr = child.stderr.take().ok_or_else(|| AppError::YtDlp("no stderr".into()))?;
-
-        let state_a = state.clone();
-        let jid = job_id.to_string();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Some(progress) = parse_progress_line(&line) {
-                    let _ = state_a.events.send(crate::types::BackendEvent::DownloadProgress {
-                        id: jid.clone(),
-                        pct: progress.pct,
-                        label: "Загрузка".to_string(),
-                        speed: progress.speed,
-                        eta: progress.eta,
-                    });
+        // 2) Подписка на events.
+        let mut events_rx = downloader.subscribe_events();
+        let state_for_events = state.clone();
+        let job_id_owned = job_id.to_string();
+        let events_task = tokio::spawn(async move {
+            loop {
+                match events_rx.recv().await {
+                    Ok(event) => forward_event(&state_for_events, &job_id_owned, event),
+                    Err(RecvError::Lagged(n)) => {
+                        tracing::warn!("yt-dlp events lagged, dropped {n}");
+                    }
+                    Err(RecvError::Closed) => break,
                 }
             }
         });
 
-        let state_b = state.clone();
-        let jid_b = job_id.to_string();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.is_empty() { state_b.log_line(&jid_b, line); }
-            }
-        });
+        // 3) Запуск download. `to_path` пишет точно в `out_dir/source`,
+        //    расширение выберет yt-dlp по доступным форматам.
+        let target = out_dir.join(OUTPUT_BASENAME);
+        let downloader_clone = (*downloader).clone();
+        let download_future = async move {
+            downloader_clone
+                .download_video_to_path(&video, target)
+                .await
+                .map_err(|e| AppError::YtDlp(format!("{e}")))
+        };
 
-        // Параллельно ждём cancel и завершения процесса.
-        let status = tokio::select! {
-            res = child.wait() => res.map_err(|e| AppError::YtDlp(format!("wait: {e}")))?,
+        // 4) Гонка cancel ↔ download.
+        let result = tokio::select! {
+            r = download_future => r,
             _ = cancel.cancelled() => {
-                let _ = child.kill().await;
+                downloader.shutdown();
+                events_task.abort();
                 return Err(AppError::Cancelled);
             }
         };
 
-        if !status.success() {
-            return Err(AppError::YtDlp(format!("exit code: {:?}", status.code())));
+        // 5) Завершаем event task.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        events_task.abort();
+
+        let path = result?;
+        if !path.is_file() {
+            return Err(AppError::YtDlp(format!(
+                "downloaded file not found at {}",
+                path.display()
+            )));
         }
-        // Найти файл по template
-        find_downloaded(out_dir, template, url).ok_or_else(|| {
-            AppError::YtDlp("downloaded file not found by template".into())
-        })
+        Ok(path)
     }
 }
 
-fn parse_progress_line(line: &str) -> Option<Progress> {
-    let rest = line.strip_prefix("PROGRESS:")?;
-    let parts: Vec<&str> = rest.split('|').collect();
-    if parts.is_empty() {
-        return None;
+fn video_to_media(v: &Video) -> MediaInfo {
+    MediaInfo {
+        id: v.id.clone(),
+        url: v.webpage_url.clone().unwrap_or_default(),
+        title: v.title.clone(),
+        uploader: v
+            .uploader
+            .clone()
+            .or_else(|| v.channel.clone())
+            .or_else(|| v.uploader_id.clone()),
+        duration_sec: v.duration.map(|d| d as u64),
+        thumbnail: v.thumbnail.clone(),
     }
-    // yt-dlp отдаёт "Unknown" для live-streams/HLS без total size, а
-    // также "100.0" для DASH-кусков сразу после старта. Такие строки
-    // не должны перезаписывать реальный прогресс в UI.
-    let pct_str = parts.first().copied().unwrap_or("0").trim().trim_end_matches('%');
-    if pct_str.is_empty() || pct_str.eq_ignore_ascii_case("unknown") || pct_str == "N/A" {
-        return None;
-    }
-    let pct: f32 = match pct_str.parse() {
-        Ok(v) => v,
-        Err(_) => return None,
-    };
-    if !pct.is_finite() || !(0.0..=100.0).contains(&pct) {
-        return None;
-    }
-    let speed = parts.get(1).copied().map(|s| s.trim().to_string());
-    let eta = parts.get(2).copied().map(|s| s.trim().to_string());
-    Some(Progress {
-        pct: pct / 100.0,
-        label: "download".to_string(),
-        speed,
-        eta,
-    })
 }
 
-fn find_downloaded(dir: &Path, template: &str, _url: &str) -> Option<PathBuf> {
-    // template вроде "%(title).150B [%(id)s].%(ext)s" — расширение `.exts`
-    // нестандартное, Path::extension() его не увидит. Поэтому берём самый
-    // новый файл в workdir; workdir уникален по job.id, так что коллизий нет.
-    let ext_hint = Path::new(template)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
-    let mut best: Option<PathBuf> = None;
-    let mut best_mtime = std::time::SystemTime::UNIX_EPOCH;
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if !p.is_file() {
-                continue;
-            }
-            if !ext_hint.is_empty() {
-                if p.extension().and_then(|x| x.to_str()) != Some(ext_hint) {
-                    continue;
-                }
-            }
-            let m = e
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            if m > best_mtime {
-                best_mtime = m;
-                best = Some(p);
-            }
+/// Пробрасывает `DownloadEvent` из крейта в наш `BackendEvent` broadcast.
+fn forward_event(
+    state: &AppState,
+    job_id: &str,
+    event: Arc<yt_dlp::events::DownloadEvent>,
+) {
+    use yt_dlp::events::DownloadEvent as E;
+    match event.as_ref() {
+        E::DownloadProgress {
+            downloaded_bytes,
+            total_bytes,
+            ..
+        } => {
+            let pct = if *total_bytes > 0 {
+                (*downloaded_bytes as f32 / *total_bytes as f32).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let _ = state.events.send(crate::types::BackendEvent::DownloadProgress {
+                id: job_id.to_string(),
+                pct,
+                label: "Загрузка".to_string(),
+                speed: None,
+                eta: None,
+            });
         }
+        E::DownloadFailed { error, .. } => {
+            state.log_line(job_id, format!("yt-dlp: download failed: {error}"));
+        }
+        E::FormatSelected { format_id, .. } => {
+            state.log_line(job_id, format!("yt-dlp: format selected = {format_id}"));
+        }
+        _ => {}
     }
-    best
 }

@@ -4,10 +4,8 @@ use crate::config::{self, AppConfig};
 use crate::error::{AppError, AppResult};
 use crate::paths;
 use crate::pipeline;
-use crate::sidecar;
 use crate::state::AppState;
 use crate::types::{FileInfo, Job, JobId, MediaInfo, SidecarStatus};
-use crate::ytdlp::YtDlpRunner;
 use tauri::Manager;
 
 #[tauri::command]
@@ -63,9 +61,7 @@ pub async fn fetch_metadata(
     state: tauri::State<'_, AppState>,
     url: String,
 ) -> AppResult<MediaInfo> {
-    let cfg = state.config();
-    let ytdlp = YtDlpRunner::resolve(&cfg)?;
-    ytdlp.fetch_metadata(&url).await
+    crate::ytdlp::YtDlpRunner::fetch_metadata(&state, &url).await
 }
 
 const MEDIA_EXTENSIONS: &[&str] = &[
@@ -156,9 +152,12 @@ pub async fn enqueue_local(
 #[tauri::command]
 pub fn diagnose(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> SidecarStatus {
     let cfg = state.config();
+    let bin_dir = crate::sidecar::bin_dir(Some(&app));
     SidecarStatus {
-        ytdlp: sidecar::find_ytdlp(cfg.download.custom_ytdlp_path.as_deref()),
-        ffmpeg: sidecar::find_ffmpeg(cfg.download.custom_ffmpeg_path.as_deref()),
+        ytdlp: Some(crate::sidecar::yt_dlp_path(Some(&app)))
+            .filter(|p| p.is_file()),
+        ffmpeg: Some(crate::sidecar::ffmpeg_path(Some(&app)))
+            .filter(|p| p.is_file()),
         app_data: paths::config_dir(Some(&app)),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
     }

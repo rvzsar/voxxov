@@ -1,62 +1,61 @@
-//! Преобразование `ProxyConfig` в yt-dlp CLI-аргументы + env-vars.
+//! Маппинг нашего `ProxyConfig` в `yt_dlp::client::proxy::ProxyConfig`.
 //!
-//! User/password percent-кодируются (через `url::Url`), чтобы пароль
-//! с `@`/`:'/` не ломал URL. Предупреждение: пароль всё равно виден в
-//! `ps`/`tasklist`, т.к. передаётся как CLI-аргумент `--proxy`; для
-//! production стоит использовать `.netrc` или env-переменные.
+//! Сам proxy теперь устанавливается на уровне `DownloaderBuilder` через
+//! `.with_proxy(...)` (см. `ytdlp.rs`). Этот модуль остаётся только как
+//! тонкий конвертер.
 
 use crate::config::{ProxyConfig, ProxyKind};
+use url::Url;
 
-#[derive(Debug, Clone, Default)]
-pub struct ProxyEnv {
-    pub args: Vec<String>,
-    pub env: Vec<(String, String)>,
-}
+pub fn to_ytdlp_proxy(cfg: &ProxyConfig) -> Option<yt_dlp::client::proxy::ProxyConfig> {
+    use yt_dlp::client::proxy::{ProxyConfig as YtProxy, ProxyType};
 
-pub fn build(cfg: &ProxyConfig) -> ProxyEnv {
-    let mut out = ProxyEnv::default();
-    let scheme = match cfg.kind {
-        ProxyKind::None => return apply_no_proxy(cfg, out),
-        ProxyKind::Http => "http",
-        ProxyKind::Https => "https",
-        ProxyKind::Socks5 => "socks5",
+    let kind = match cfg.kind {
+        ProxyKind::None => return None,
+        ProxyKind::Http => ProxyType::Http,
+        ProxyKind::Https => ProxyType::Https,
+        ProxyKind::Socks5 => ProxyType::Socks5,
     };
 
-    let host = match &cfg.host {
-        Some(h) if !h.is_empty() => h.clone(),
-        _ => return apply_no_proxy(cfg, out),
-    };
+    let host = cfg.host.as_deref()?.trim();
+    if host.is_empty() {
+        return None;
+    }
     let port = cfg.port.unwrap_or(match cfg.kind {
         ProxyKind::Http | ProxyKind::Https => 8080,
         ProxyKind::Socks5 => 1080,
         ProxyKind::None => 0,
     });
 
-    // Собираем URL через `url::Url`, чтобы percent-кодировать user/password.
-    let mut url = match url::Url::parse(&format!("{scheme}://{host}:{port}")) {
+    // Сборка URL через `url::Url` — percent-encode для user/password.
+    let mut url = match Url::parse(&format!(
+        "{}://{}:{}",
+        match cfg.kind {
+            ProxyKind::Http => "http",
+            ProxyKind::Https => "https",
+            ProxyKind::Socks5 => "socks5",
+            ProxyKind::None => unreachable!(),
+        },
+        host,
+        port
+    )) {
         Ok(u) => u,
-        Err(_) => return out, // невалидный хост — отдаём без прокси
+        Err(_) => return None,
     };
     if let (Some(u), Some(p)) = (&cfg.username, &cfg.password) {
         if !u.is_empty() {
-            // set_username/set_password сами percent-кодируют.
             let _ = url.set_username(Some(u));
             let _ = url.set_password(Some(p));
         }
     }
-    out.args.push("--proxy".to_string());
-    out.args.push(url.as_str().to_string());
 
-    out = apply_no_proxy(cfg, out);
-    out
-}
-
-fn apply_no_proxy(cfg: &ProxyConfig, mut out: ProxyEnv) -> ProxyEnv {
+    let mut yp = YtProxy::new(kind, url.as_str());
     if let Some(np) = &cfg.no_proxy {
         if !np.is_empty() {
-            out.env.push(("NO_PROXY".to_string(), np.clone()));
-            out.env.push(("no_proxy".to_string(), np.clone()));
+            let list: Vec<String> =
+                np.split(',').map(|s| s.trim().to_string()).collect();
+            yp = yp.with_no_proxy(list);
         }
     }
-    out
+    Some(yp)
 }

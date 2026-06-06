@@ -91,15 +91,13 @@ async fn run_inner(
         });
         (media, path)
     } else {
-        let ytdlp = YtDlpRunner::resolve(cfg)?;
         state.set_stage(&job.id, JobStage::FetchingMetadata, "Получаем метаданные…");
-        let media = ytdlp.fetch_metadata(&job.url).await?;
+        let media = crate::ytdlp::YtDlpRunner::fetch_metadata(&state, &job.url).await?;
         state.patch_job(&job.id, JobPatch {
             media: Some(media.clone()),
             progress: Some(Progress { pct: 0.05, label: format!("{} · {}", media.title, short_dur(media.duration_sec)), speed: None, eta: None }),
             ..Default::default()
         });
-        let tmpl = cfg.download.output_template.clone();
         let st = state.clone();
         let id = job.id.clone();
         let url = job.url.clone();
@@ -107,7 +105,7 @@ async fn run_inner(
         let cfg2 = cfg.clone();
         let tk = token.clone();
         st.set_stage(&id, JobStage::Downloading, "Скачиваем видео…");
-        let downloaded = ytdlp.download(&st, &id, &url, &wd, &tmpl, &cfg2, tk).await?;
+        let downloaded = crate::ytdlp::YtDlpRunner::download(&st, &id, &url, &wd, &cfg2, tk).await?;
         (media, downloaded)
     };
 

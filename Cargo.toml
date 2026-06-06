@@ -6,7 +6,7 @@ members = ["apps/desktop/src-tauri"]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
-license = "MIT"
+license = "GPL-3.0-only"
 repository = "https://github.com/your-org/gigaam-desktop"
 authors = ["GigaAM Desktop contributors"]
 
@@ -44,9 +44,8 @@ tracing-appender = "0.2"
 sherpa-onnx = { version = "1.13.2", default-features = false, features = ["static"] }
 hound = "3.5"
 
-# Network / proxy
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "socks"] }
-url = "2"
+# yt-dlp wrapper (auto-installs yt-dlp + ffmpeg, GPL-3.0)
+yt-dlp = { version = "2.7.2", default-features = false, features = ["cache-redb", "rustls"] }
 
 # CLI & progress
 clap = { version = "4", features = ["derive"] }
@@ -57,7 +56,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 once_cell = "1"
 parking_lot = "0.12"
-which = "7"
 
 # Database (для истории распознаваний, Sprint 4)
 rusqlite = { version = "0.32", features = ["bundled"] }

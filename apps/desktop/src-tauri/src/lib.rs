@@ -47,6 +47,16 @@ pub fn run() {
 
             let state = AppState::new(cfg.clone(), app.handle().clone());
 
+            // Запускаем eager init `yt-dlp` downloader в фоне. При первом
+            // `enqueue_url` он уже будет готов (или init ещё идёт — тогда
+            // `YtDlpRunner::get` подождёт через OnceCell).
+            let state_for_init = state.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = crate::ytdlp::YtDlpRunner::get(&state_for_init).await {
+                    tracing::warn!("yt-dlp eager init failed: {e}");
+                }
+            });
+
             // Подписываемся на канал событий ДО manage, чтобы не потерять
             // ничего из того, что сгенерируется во время инициализации.
             let mut events_rx = state.events.subscribe();
