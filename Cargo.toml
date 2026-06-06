@@ -42,16 +42,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 
-# ONNX Runtime (Sprint 3)
-ort = { version = "2.0.0-rc.10", default-features = false, features = ["openvino"] }
-ndarray = "0.16"
-ndarray-npy = "0.9"
-tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
-
-# Audio
-hound = "1"
-symphonia = { version = "0.5", features = ["all"] }
-realfft = "1"
+# ONNX Runtime (sherpa-onnx — native C, static linking)
+sherpa-onnx = { version = "1.13.2", default-features = false, features = ["static"] }
+hound = "3.5"
 
 # Network / proxy
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "socks"] }
@@ -66,6 +59,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 once_cell = "1"
 parking_lot = "0.12"
+which = "7"
 
 # Database (для истории распознаваний, Sprint 4)
 rusqlite = { version = "0.32", features = ["bundled"] }

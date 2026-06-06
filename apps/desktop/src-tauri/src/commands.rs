@@ -6,7 +6,7 @@ use crate::paths;
 use crate::pipeline;
 use crate::sidecar;
 use crate::state::AppState;
-use crate::types::{Job, JobId, MediaInfo, SidecarStatus};
+use crate::types::{FileInfo, Job, JobId, MediaInfo, SidecarStatus};
 use crate::ytdlp::YtDlpRunner;
 use tauri::Manager;
 
@@ -68,9 +68,94 @@ pub async fn fetch_metadata(
     ytdlp.fetch_metadata(&url).await
 }
 
+const MEDIA_EXTENSIONS: &[&str] = &[
+    "wav", "mp3", "flac", "ogg", "m4a", "aac", "wma", "opus",
+    "mp4", "mkv", "webm", "avi", "mov", "flv", "wmv", "m4v", "ts", "mts",
+];
+
 #[tauri::command]
-pub fn diagnose(app: tauri::AppHandle) -> SidecarStatus {
-    let cfg = crate::config::load_or_default();
+pub async fn scan_folder(path: String) -> AppResult<Vec<FileInfo>> {
+    let dir = std::path::PathBuf::from(path.trim());
+    let meta = tokio::fs::metadata(&dir)
+        .await
+        .map_err(|e| AppError::Other(format!("stat {}: {e}", dir.display())))?;
+    if !meta.is_dir() {
+        return Err(AppError::Other(format!("not a directory: {}", dir.display())));
+    }
+    let mut files = Vec::new();
+    scan_dir_recursive(&dir, &mut files).await?;
+    files.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(files)
+}
+
+async fn scan_dir_recursive(dir: &std::path::Path, out: &mut Vec<FileInfo>) -> AppResult<()> {
+    let mut rd = tokio::fs::read_dir(dir)
+        .await
+        .map_err(|e| AppError::Other(format!("read dir {}: {e}", dir.display())))?;
+    while let Some(entry) = rd
+        .next_entry()
+        .await
+        .map_err(|e| AppError::Other(e.to_string()))?
+    {
+        let path = entry.path();
+        let file_type = match entry.file_type().await {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if file_type.is_dir() {
+            Box::pin(scan_dir_recursive(&path, out)).await?;
+        } else if file_type.is_file() {
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                if MEDIA_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                    let name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let size = entry
+                        .metadata()
+                        .await
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    out.push(FileInfo {
+                        path: path.to_string_lossy().to_string(),
+                        name,
+                        extension: ext.to_lowercase(),
+                        size_bytes: size,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn enqueue_local(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> AppResult<JobId> {
+    let path = path.trim().to_string();
+    if path.is_empty() {
+        return Err(AppError::InvalidUrl("empty path".into()));
+    }
+    if !std::path::Path::new(&path).is_file() {
+        return Err(AppError::InvalidUrl(format!("file not found: {}", path)));
+    }
+    let job = Job::new_local(path);
+    let id = job.id.clone();
+    state.insert_job(job.clone());
+    let cfg = state.config();
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = pipeline::run_job(st, cfg, job).await;
+    });
+    Ok(id)
+}
+
+#[tauri::command]
+pub fn diagnose(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> SidecarStatus {
+    let cfg = state.config();
     SidecarStatus {
         ytdlp: sidecar::find_ytdlp(cfg.download.custom_ytdlp_path.as_deref()),
         ffmpeg: sidecar::find_ffmpeg(cfg.download.custom_ffmpeg_path.as_deref()),

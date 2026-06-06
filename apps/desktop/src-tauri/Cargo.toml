@@ -46,12 +46,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 
-# ONNX / audio (Sprint 3 — пока не используются, но заранее подключены)
-ort = { workspace = true }
-ndarray = { workspace = true }
-tokenizers = { workspace = true }
+# ONNX / ASR (sherpa-onnx)
+sherpa-onnx = { workspace = true }
 hound = { workspace = true }
-symphonia = { workspace = true }
 
 url = { workspace = true }
 
@@ -59,6 +56,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
+which = { workspace = true }
 
 [features]
 # По умолчанию включаем custom-protocol для релизной сборки

@@ -66,16 +66,26 @@ impl AppState {
     }
 
     /// Установить стадию и (опционально) текстовый label прогресса.
+    /// **Не сбрасывает** `pct`, если оно уже > 0 — прогресс-бар не
+    /// отскакивает назад при переходе между стадиями.
     pub fn set_stage(&self, id: &str, stage: JobStage, label: impl Into<String>) {
+        let current_pct = self
+            .jobs
+            .read()
+            .get(id)
+            .map(|j| j.progress.pct)
+            .unwrap_or(0.0);
+        let pct = match stage {
+            JobStage::Done | JobStage::Failed | JobStage::Cancelled => 1.0,
+            _ if current_pct > 0.0 => current_pct,
+            _ => 0.0,
+        };
         self.patch_job(
             id,
             JobPatch {
                 stage: Some(stage),
                 progress: Some(crate::types::Progress {
-                    pct: match stage {
-                        JobStage::Done | JobStage::Failed | JobStage::Cancelled => 100.0,
-                        _ => 0.0,
-                    },
+                    pct,
                     label: label.into(),
                     speed: None,
                     eta: None,

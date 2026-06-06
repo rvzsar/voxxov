@@ -21,7 +21,7 @@ pub async fn run_job(state: AppState, cfg: AppConfig, job: Job) -> AppResult<()>
         Ok((transcript_path, preview)) => {
             state.patch_job(&id, JobPatch {
                 stage: Some(JobStage::Done),
-                progress: Some(Progress { pct: 100.0, label: "Готово".into(), speed: None, eta: None }),
+                progress: Some(Progress { pct: 1.0, label: "Готово".into(), speed: None, eta: None }),
                 finished_at: Some(Utc::now().to_rfc3339()),
                 transcript_path: Some(transcript_path.to_string_lossy().to_string()),
                 transcript_preview: Some(preview),
@@ -37,7 +37,7 @@ pub async fn run_job(state: AppState, cfg: AppConfig, job: Job) -> AppResult<()>
             if matches!(e, AppError::Cancelled) {
                 state.patch_job(&id, JobPatch {
                     stage: Some(JobStage::Cancelled),
-                    progress: Some(Progress { pct: 100.0, label: "Отменено".into(), speed: None, eta: None }),
+                    progress: Some(Progress { pct: 1.0, label: "Отменено".into(), speed: None, eta: None }),
                     finished_at: Some(Utc::now().to_rfc3339()),
                     error: Some("cancelled".into()),
                     ..Default::default()
@@ -46,7 +46,7 @@ pub async fn run_job(state: AppState, cfg: AppConfig, job: Job) -> AppResult<()>
                 let msg = e.to_string();
                 state.patch_job(&id, JobPatch {
                     stage: Some(JobStage::Failed),
-                    progress: Some(Progress { pct: 100.0, label: "Ошибка".into(), speed: None, eta: None }),
+                    progress: Some(Progress { pct: 1.0, label: "Ошибка".into(), speed: None, eta: None }),
                     finished_at: Some(Utc::now().to_rfc3339()),
                     error: Some(msg.clone()),
                     ..Default::default()
@@ -68,25 +68,38 @@ async fn run_inner(
     job: &Job,
     token: tokio_util::sync::CancellationToken,
 ) -> AppResult<(PathBuf, String)> {
-    let ytdlp = YtDlpRunner::resolve(cfg)?;
     let ffmpeg = FfmpegRunner::resolve(cfg.download.custom_ffmpeg_path.as_deref())?;
 
-    // 1) metadata
-    state.set_stage(&job.id, JobStage::FetchingMetadata, "Получаем метаданные…");
-    let media = ytdlp.fetch_metadata(&job.url).await?;
-    state.patch_job(&job.id, JobPatch {
-        media: Some(media.clone()),
-        progress: Some(Progress { pct: 5.0, label: format!("{} · {}", media.title, short_dur(media.duration_sec)), speed: None, eta: None }),
-        ..Default::default()
-    });
-
-    // 2) download
     let workdir = state.app_handle()
         .map(|h| paths::job_workdir(&h, &job.id))
         .unwrap_or_else(|| paths::jobs_dir(None).join(&job.id));
     std::fs::create_dir_all(&workdir)?;
-    let tmpl = cfg.download.output_template.clone();
-    let downloaded = {
+
+    // 1-2) metadata + source file (URL → yt-dlp, local → direct)
+    let (media, source_file) = if job.source == crate::types::JobSource::LocalFile {
+        let path = std::path::PathBuf::from(&job.url);
+        let name = path.file_stem()
+            .and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+        let media = MediaInfo {
+            id: String::new(), url: job.url.clone(), title: name,
+            uploader: None, duration_sec: None, thumbnail: None,
+        };
+        state.patch_job(&job.id, JobPatch {
+            media: Some(media.clone()),
+            progress: Some(Progress { pct: 0.05, label: format!("Локальный файл: {}", media.title), speed: None, eta: None }),
+            ..Default::default()
+        });
+        (media, path)
+    } else {
+        let ytdlp = YtDlpRunner::resolve(cfg)?;
+        state.set_stage(&job.id, JobStage::FetchingMetadata, "Получаем метаданные…");
+        let media = ytdlp.fetch_metadata(&job.url).await?;
+        state.patch_job(&job.id, JobPatch {
+            media: Some(media.clone()),
+            progress: Some(Progress { pct: 0.05, label: format!("{} · {}", media.title, short_dur(media.duration_sec)), speed: None, eta: None }),
+            ..Default::default()
+        });
+        let tmpl = cfg.download.output_template.clone();
         let st = state.clone();
         let id = job.id.clone();
         let url = job.url.clone();
@@ -94,7 +107,8 @@ async fn run_inner(
         let cfg2 = cfg.clone();
         let tk = token.clone();
         st.set_stage(&id, JobStage::Downloading, "Скачиваем видео…");
-        ytdlp.download(&st, &id, &url, &wd, &tmpl, &cfg2, tk).await?
+        let downloaded = ytdlp.download(&st, &id, &url, &wd, &tmpl, &cfg2, tk).await?;
+        (media, downloaded)
     };
 
     // 3) extract audio
@@ -102,7 +116,7 @@ async fn run_inner(
     {
         let st = state.clone();
         let id = job.id.clone();
-        let in_p = downloaded.clone();
+        let in_p = source_file.clone();
         let out_p = audio_wav.clone();
         let sr = cfg.asr.sample_rate;
         let tk = token.clone();
@@ -123,7 +137,7 @@ async fn run_inner(
     let st2 = state.clone();
     let id2 = job.id.clone();
     state.set_stage(&id2, JobStage::Transcribing, "Распознаём речь…");
-    let text = asr::transcribe(&st2, &id2, &audio_wav, &cfg.asr).await?;
+    let text = asr::transcribe(&st2, &id2, &audio_wav, &cfg.asr, token.clone()).await?;
 
     // 5) write outputs (txt/srt/json) в output dir
     let out_dir = state.app_handle()
@@ -167,10 +181,24 @@ fn sanitize(s: &str) -> String {
         .to_string()
 }
 
-fn text_to_srt(_text: &str) -> String {
-    // Без сегментных меток из GigaAM оставим один общий блок.
-    // Полноценные тайм-коды подключим, когда ASR будет возвращать сегменты.
-    String::new()
+fn text_to_srt(text: &str) -> String {
+    // Without segment timestamps from GigaAM, produce a single subtitle block
+    // spanning 00:00:00 → end-of-text. Full timestamps will be added once
+    // the ASR engine returns time-aligned segments.
+    if text.trim().is_empty() {
+        return String::new();
+    }
+    // Rough estimate: ~150 chars/min for Russian speech
+    let duration_sec = ((text.len() as f64 / 150.0) * 60.0).ceil() as u64;
+    let end = format_srt_time(duration_sec);
+    format!("1\n00:00:00,000 --> {end}\n{text}\n")
+}
+
+fn format_srt_time(total_sec: u64) -> String {
+    let h = total_sec / 3600;
+    let m = (total_sec % 3600) / 60;
+    let s = total_sec % 60;
+    format!("{h:02}:{m:02}:{s:02},000")
 }
 
 fn short_dur(s: Option<u64>) -> String {

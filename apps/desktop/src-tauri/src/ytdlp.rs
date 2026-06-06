@@ -148,19 +148,39 @@ impl YtDlpRunner {
 }
 
 fn parse_progress_line(line: &str) -> Option<Progress> {
-    if let Some(rest) = line.strip_prefix("PROGRESS:") {
-        let parts: Vec<&str> = rest.split('|').collect();
-        if parts.is_empty() { return None; }
-        let pct_str = parts.first().copied().unwrap_or("0").trim().trim_end_matches('%');
-        let pct: f32 = pct_str.parse().unwrap_or(0.0);
-        let speed = parts.get(1).copied().map(|s| s.trim().to_string());
-        let eta = parts.get(2).copied().map(|s| s.trim().to_string());
-        return Some(Progress { pct, label: "download".to_string(), speed, eta });
+    let rest = line.strip_prefix("PROGRESS:")?;
+    let parts: Vec<&str> = rest.split('|').collect();
+    if parts.is_empty() {
+        return None;
     }
-    None
+    // yt-dlp отдаёт "Unknown" для live-streams/HLS без total size, а
+    // также "100.0" для DASH-кусков сразу после старта. Такие строки
+    // не должны перезаписывать реальный прогресс в UI.
+    let pct_str = parts.first().copied().unwrap_or("0").trim().trim_end_matches('%');
+    if pct_str.is_empty() || pct_str.eq_ignore_ascii_case("unknown") || pct_str == "N/A" {
+        return None;
+    }
+    let pct: f32 = match pct_str.parse() {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    if !pct.is_finite() || !(0.0..=100.0).contains(&pct) {
+        return None;
+    }
+    let speed = parts.get(1).copied().map(|s| s.trim().to_string());
+    let eta = parts.get(2).copied().map(|s| s.trim().to_string());
+    Some(Progress {
+        pct: pct / 100.0,
+        label: "download".to_string(),
+        speed,
+        eta,
+    })
 }
 
-fn find_downloaded(dir: &Path, template: &str, url: &str) -> Option<PathBuf> {
+fn find_downloaded(dir: &Path, template: &str, _url: &str) -> Option<PathBuf> {
+    // template вроде "%(title).150B [%(id)s].%(ext)s" — расширение `.exts`
+    // нестандартное, Path::extension() его не увидит. Поэтому берём самый
+    // новый файл в workdir; workdir уникален по job.id, так что коллизий нет.
     let ext_hint = Path::new(template)
         .extension()
         .and_then(|e| e.to_str())
@@ -170,20 +190,23 @@ fn find_downloaded(dir: &Path, template: &str, url: &str) -> Option<PathBuf> {
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let p = e.path();
-            if !p.is_file() { continue; }
-            let m = e.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            if !ext_hint.is_empty() {
-                if p.extension().and_then(|x| x.to_str()) != Some(ext_hint) { continue; }
+            if !p.is_file() {
+                continue;
             }
+            if !ext_hint.is_empty() {
+                if p.extension().and_then(|x| x.to_str()) != Some(ext_hint) {
+                    continue;
+                }
+            }
+            let m = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             if m > best_mtime {
                 best_mtime = m;
                 best = Some(p);
             }
         }
     }
-    if best.is_some() { return best; }
-    // fallback: попробуем взять id из url
-    let id = url.rsplit('/').find(|s| !s.is_empty()).unwrap_or("video");
-    let p = dir.join(format!("{id}.{ext_hint}"));
-    if p.is_file() { Some(p) } else { None }
+    best
 }

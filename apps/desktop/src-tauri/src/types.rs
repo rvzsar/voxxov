@@ -37,6 +37,18 @@ impl JobStage {
     }
 }
 
+/// Источник задачи: URL или локальный файл.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobSource {
+    Url,
+    LocalFile,
+}
+
+impl Default for JobSource {
+    fn default() -> Self { JobSource::Url }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
@@ -73,6 +85,8 @@ pub struct MediaInfo {
 pub struct Job {
     pub id: JobId,
     pub url: String,
+    #[serde(default)]
+    pub source: JobSource,
     pub stage: JobStage,
     pub progress: Progress,
     pub created_at: String,
@@ -94,6 +108,7 @@ impl Job {
         Self {
             id: Uuid::new_v4().to_string(),
             url,
+            source: JobSource::Url,
             stage: JobStage::Queued,
             progress: Progress::default(),
             created_at: now.to_rfc3339(),
@@ -104,6 +119,39 @@ impl Job {
             error: None,
         }
     }
+
+    /// Создать задачу для локального файла.
+    pub fn new_local(path: String) -> Self {
+        let now: DateTime<Utc> = Utc::now();
+        let name = std::path::Path::new(&path)
+            .file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            url: path.clone(),
+            source: JobSource::LocalFile,
+            stage: JobStage::Queued,
+            progress: Progress::default(),
+            created_at: now.to_rfc3339(),
+            finished_at: None,
+            media: Some(MediaInfo {
+                id: String::new(),
+                url: path,
+                title: name,
+                uploader: None, duration_sec: None, thumbnail: None,
+            }),
+            transcript_path: None, transcript_preview: None, error: None,
+        }
+    }
+}
+
+/// Информация о локальном аудио/видео файле.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileInfo {
+    pub path: String,
+    pub name: String,
+    pub extension: String,
+    pub size_bytes: u64,
 }
 
 /// Patch-объект для инкрементальных обновлений Job.
@@ -146,13 +194,13 @@ pub enum BackendEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         eta: Option<String>,
     },
-    #[serde(rename = "job:done")]
+    #[serde(rename = "job:done", rename_all = "camelCase")]
     JobDone {
         id: JobId,
         transcript_path: String,
         preview: String,
     },
-    #[serde(rename = "job:failed")]
+    #[serde(rename = "job:failed", rename_all = "camelCase")]
     JobFailed { id: JobId, error: String },
 }
 

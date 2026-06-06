@@ -31,8 +31,8 @@ use tauri::{Emitter, Manager};
 pub fn run() {
     // Инициализируем логгер максимально рано — чтобы ошибки старта
     // (например, проблемы с конфигом) попали и в файл, и в stderr.
-    let early_cfg = config::load_or_default();
-    logging::init(&early_cfg.logging);
+    let cfg = config::load_or_default();
+    logging::init(&cfg.logging);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -40,10 +40,14 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
-            // Загружаем актуальный конфиг (после возможных override-ов из UI)
-            let cfg = config::load_or_default();
-            let state = AppState::new(cfg, app.handle().clone());
+        .setup(move |app| {
+            // Создаём структуру каталогов сразу, чтобы первый запуск
+            // не падал на записи в `jobs/` или `transcripts/`.
+            if let Err(e) = paths::ensure_all(&app.handle()) {
+                tracing::warn!("paths::ensure_all failed: {e}");
+            }
+
+            let state = AppState::new(cfg.clone(), app.handle().clone());
 
             // Подписываемся на канал событий ДО manage, чтобы не потерять
             // ничего из того, что сгенерируется во время инициализации.
@@ -74,6 +78,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::enqueue_url,
+            commands::enqueue_local,
+            commands::scan_folder,
             commands::list_jobs,
             commands::cancel_job,
             commands::get_config,

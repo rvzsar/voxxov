@@ -1,145 +1,259 @@
-//! ASR через Python сабпроцесс, вызывающий GigaAM.
+//! ASR-orchestrator.
 //!
-//! Ожидается, что в окружении установлены:
-//!   * `gigaam` (pip install .) с моделью, скачанной по инструкции
-//!   * либо кастомный CLI, который принимает `<input.wav>` и
-//!     печатает JSON `{ "text": "..." }` в stdout.
+//! `transcribe` — async entry point. Тяжёлая работа (чтение WAV, создание
+//! recognizer, decode сегментов) вынесена в `tokio::task::spawn_blocking`,
+//! чтобы не блокировать tokio runtime thread.
 //!
-//! Если `model_path` начинается с `cmd:` — содержимое после префикса
-//! трактуется как команда: `{cmd} {input}`.
-//! Иначе используется `python -m gigaam ... <input>`.
+//! Длинное аудио (> `max_segment_sec`) разрезается на чанки с overlap;
+//! cancellation проверяется между чанками. Сам `decode` отменить нельзя
+//! (sherpa-onnx не поддерживает mid-cancel C-API).
 
+use super::segment::{read_wav_samples, split_into_segments};
+use super::worker::AsrEngine;
 use crate::config::AsrConfig;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use std::path::Path;
-use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+/// Main entry point: transcribe audio file → text.
 pub async fn transcribe(
     state: &AppState,
     job_id: &str,
     audio: &Path,
     cfg: &AsrConfig,
+    cancel: CancellationToken,
 ) -> AppResult<String> {
     if !audio.is_file() {
-        return Err(AppError::Asr(format!("audio not found: {}", audio.display())));
+        return Err(AppError::Asr(format!(
+            "audio not found: {}",
+            audio.display()
+        )));
+    }
+    if cfg.model_path.is_empty() {
+        return Err(AppError::Asr("model_path is empty".into()));
     }
 
-    let (program, args) = build_command(cfg, audio);
-    state.log_line(job_id, format!("ASR: {program} {}", args.join(" ")));
+    state.log_line(job_id, format!("ASR: loading model from {}", cfg.model_path));
 
-    let mut cmd = Command::new(&program);
-    cmd.args(&args);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| AppError::Asr(format!("spawn {program}: {e}")))?;
-    let stdout = child.stdout.take().ok_or_else(|| AppError::Asr("no stdout".into()))?;
-    let stderr = child.stderr.take().ok_or_else(|| AppError::Asr("no stderr".into()))?;
+    // cmd: prefix — fallback to external CLI
+    if let Some(cmd) = cfg.model_path.strip_prefix("cmd:") {
+        return super::cmd_fallback::transcribe_cmd(state, job_id, audio, cmd).await;
+    }
 
-    let st = state.clone();
-    let jid = job_id.to_string();
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            st.log_line(&jid, format!("asr: {line}"));
+    // К этой точке `cfg.model_path` гарантированно непустой и не `cmd:` —
+    // оба случая отсечены выше. Auto-discovery оставлен как fallback.
+    let model_dir = if cfg.model_path.is_empty() {
+        match auto_discover_model_dir() {
+            Some(d) => d,
+            None => return Err(AppError::Asr("model_path is empty and no models/ directory found near the app".into())),
         }
-    });
+    } else {
+        Path::new(&cfg.model_path).to_path_buf()
+    };
 
-    let token = CancellationToken::new();
-    let cancel = state.cancel_tokens.read().get(job_id).cloned();
-    if let Some(t) = cancel { /* опционально: не используем токен в этой версии */ let _ = t; }
+    // 1. Discover model files
+    let (encoder, decoder, joiner, tokens) = discover_model_files(&model_dir)?;
+    state.log_line(
+        job_id,
+        format!(
+            "ASR: encoder={} decoder={} joiner={} tokens={}",
+            encoder.display(),
+            decoder.display(),
+            joiner.display(),
+            tokens.display()
+        ),
+    );
 
-    let status = tokio::select! {
-        res = child.wait() => res.map_err(|e| AppError::Asr(format!("wait: {e}")))?,
-        _ = token.cancelled() => {
-            let _ = child.kill().await;
+    // 2. Provider
+    let provider = match cfg.device {
+        crate::config::AsrDevice::Cuda => "cuda",
+        crate::config::AsrDevice::Directml => "directml",
+        _ => "cpu",
+    };
+    let num_threads = num_cpus().min(4);
+
+    // 3. Read WAV в spawn_blocking
+    let audio_path = audio.to_path_buf();
+    let audio = tokio::task::spawn_blocking(move || read_wav_samples(&audio_path))
+        .await
+        .map_err(|e| AppError::Asr(format!("wav reader join: {e}")))??;
+
+    state.log_line(
+        job_id,
+        format!(
+            "ASR: {} samples @ {}Hz, {:.1}s",
+            audio.samples.len(),
+            audio.sample_rate,
+            audio.duration_sec()
+        ),
+    );
+
+    // 4. Сегментация
+    let seg_sec = cfg.max_segment_sec.max(1.0);
+    let overlap_sec = cfg.overlap_sec.max(0.0);
+    let segments = split_into_segments(&audio.samples, audio.sample_rate, seg_sec, overlap_sec);
+    if segments.is_empty() {
+        return Err(AppError::Asr("no audio samples after segmentation".into()));
+    }
+    if segments.len() > 1 {
+        state.log_line(
+            job_id,
+            format!(
+                "ASR: split into {} segments (~{:.0}s, overlap {:.1}s)",
+                segments.len(),
+                seg_sec,
+                overlap_sec
+            ),
+        );
+    }
+
+    // 5. Создать recognizer в spawn_blocking (тяжёлая загрузка ONNX)
+    state.log_line(
+        job_id,
+        format!("ASR: creating recognizer (threads={num_threads}, provider={provider})"),
+    );
+    if cancel.is_cancelled() {
+        return Err(AppError::Cancelled);
+    }
+    let enc = encoder.clone();
+    let dec = decoder.clone();
+    let join = joiner.clone();
+    let tok = tokens.clone();
+    let engine = tokio::task::spawn_blocking(move || {
+        AsrEngine::new(&enc, &dec, &join, &tok, num_threads, provider)
+    })
+    .await
+    .map_err(|e| AppError::Asr(format!("recognizer join: {e}")))??;
+
+    let engine = Arc::new(engine);
+    let total = segments.len();
+
+    // 6. Декодировать каждый сегмент
+    let mut texts: Vec<String> = Vec::with_capacity(total);
+    for (i, seg) in segments.into_iter().enumerate() {
+        if cancel.is_cancelled() {
             return Err(AppError::Cancelled);
         }
-    };
-    let mut buf = String::new();
-    let mut reader = BufReader::new(stdout);
-    use tokio::io::AsyncReadExt;
-    reader.read_to_string(&mut buf).await.ok();
-    if !status.success() {
-        return Err(AppError::Asr(format!("exit {:?}: {}", status.code(), buf)));
-    }
-    parse_text(&buf).ok_or_else(|| AppError::Asr("no text in output".into()))
-}
+        state.log_line(
+            job_id,
+            format!(
+                "ASR: segment {}/{} ({:.1}s–{:.1}s)",
+                i + 1,
+                total,
+                seg.offset_sec,
+                seg.offset_sec + seg.samples.len() as f32 / audio.sample_rate as f32
+            ),
+        );
 
-fn build_command(cfg: &AsrConfig, audio: &Path) -> (String, Vec<String>) {
-    // Кастомная команда: `cmd:my-cli --flag`
-    if let Some(stripped) = cfg.model_path.strip_prefix("cmd:") {
-        let mut tokens = shell_split(stripped);
-        let program = tokens.remove(0);
-        tokens.push(audio.to_string_lossy().to_string());
-        return (program, tokens);
-    }
-    // По умолчанию — gigaam
-    let program = "gigaam".to_string();
-    let mut args: Vec<String> = vec!["transcribe".into()];
-    if !cfg.model_path.is_empty() {
-        args.push("--model".into()); args.push(cfg.model_path.clone());
-    }
-    if !cfg.language.is_empty() {
-        args.push("--language".into()); args.push(cfg.language.clone());
-    }
-    args.push("--output-format".into()); args.push("json".into());
-    args.push(audio.to_string_lossy().to_string());
-    (program, args)
-}
+        let eng = Arc::clone(&engine);
+        let text = tokio::task::spawn_blocking(move || {
+            eng.decode(&seg.samples, seg.sample_rate)
+        })
+        .await
+        .map_err(|e| AppError::Asr(format!("decode join: {e}")))??;
 
-fn parse_text(out: &str) -> Option<String> {
-    let trimmed = out.trim();
-    if trimmed.is_empty() { return None; }
-    // 1) Строгий JSON
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if let Some(t) = v.get("text").and_then(|x| x.as_str()) {
-            return Some(t.to_string());
+        if !text.is_empty() {
+            // Склейка с пробелом; каждый чанк возвращает уже обрезанный текст.
+            texts.push(text);
         }
-        if let Some(arr) = v.get("segments").and_then(|x| x.as_array()) {
-            let mut s = String::new();
-            for seg in arr {
-                if let Some(t) = seg.get("text").and_then(|x| x.as_str()) {
-                    s.push_str(t); s.push(' ');
-                }
+    }
+
+    let combined = texts.join(" ").trim().to_string();
+    state.log_line(
+        job_id,
+        format!("ASR: done, {} chars ({} segments)", combined.len(), total),
+    );
+    Ok(combined)
+}
+
+// --- helpers used both by orchestrator and tests ---
+
+/// Discover encoder, decoder, joiner, and tokens files in a model directory.
+pub fn discover_model_files(
+    dir: &Path,
+) -> AppResult<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)>
+{
+    if !dir.is_dir() {
+        return Err(AppError::Asr(format!(
+            "model_path is not a directory: {}",
+            dir.display()
+        )));
+    }
+
+    let mut encoder = None;
+    let mut decoder = None;
+    let mut joiner = None;
+    let mut tokens = None;
+
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| AppError::Asr(format!("read dir {}: {e}", dir.display())))?
+        .flatten()
+    {
+        let name_str = entry.file_name().to_string_lossy().to_lowercase();
+        if name_str.contains("encoder") && name_str.ends_with(".onnx") {
+            encoder = Some(entry.path());
+        } else if name_str.contains("decoder") && name_str.ends_with(".onnx") {
+            decoder = Some(entry.path());
+        } else if (name_str.contains("joiner") || name_str.contains("joint"))
+            && name_str.ends_with(".onnx")
+        {
+            joiner = Some(entry.path());
+        } else if name_str.ends_with("tokens.txt") {
+            tokens = Some(entry.path());
+        }
+    }
+
+    let encoder = encoder.ok_or_else(|| {
+        AppError::Asr(format!("no *encoder*.onnx in {}", dir.display()))
+    })?;
+    let decoder = decoder.ok_or_else(|| {
+        AppError::Asr(format!("no *decoder*.onnx in {}", dir.display()))
+    })?;
+    let joiner = joiner.ok_or_else(|| {
+        AppError::Asr(format!("no *joiner*.onnx in {}", dir.display()))
+    })?;
+    let tokens = tokens.ok_or_else(|| {
+        AppError::Asr(format!("no *tokens.txt in {}", dir.display()))
+    })?;
+
+    Ok((encoder, decoder, joiner, tokens))
+}
+
+fn num_cpus() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+}
+
+fn auto_discover_model_dir() -> Option<std::path::PathBuf> {
+    let candidates = [
+        std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| p.join("models"))),
+        std::env::current_exe().ok().and_then(|e| {
+            e.parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.join("models"))
+        }),
+        std::env::current_dir().ok().map(|p| p.join("models")),
+    ];
+    for c in candidates.into_iter().flatten() {
+        if c.is_dir() {
+            let has_encoder = std::fs::read_dir(&c)
+                .ok()
+                .map(|entries| {
+                    entries.flatten().any(|e| {
+                        let n = e.file_name().to_string_lossy().to_lowercase();
+                        n.contains("encoder") && n.ends_with(".onnx")
+                    })
+                })
+                .unwrap_or(false);
+            if has_encoder {
+                return Some(c);
             }
-            if !s.is_empty() { return Some(s); }
         }
     }
-    // 2) JSONL
-    let mut acc = String::new();
-    for line in trimmed.lines() {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if let Some(t) = v.get("text").and_then(|x| x.as_str()) {
-                acc.push_str(t); acc.push(' ');
-            }
-        }
-    }
-    if !acc.is_empty() { return Some(acc); }
-    // 3) Plain text
-    Some(trimmed.to_string())
-}
-
-/// Минимальный shell-сплиттер с поддержкой кавычек.
-fn shell_split(s: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut in_q: Option<char> = None;
-    for c in s.chars() {
-        match in_q {
-            Some(q) if c == q => { in_q = None; }
-            Some(_) => cur.push(c),
-            None => match c {
-                '"' | '\'' => in_q = Some(c),
-                c if c.is_whitespace() => {
-                    if !cur.is_empty() { out.push(std::mem::take(&mut cur)); }
-                }
-                _ => cur.push(c),
-            },
-        }
-    }
-    if !cur.is_empty() { out.push(cur); }
-    out
+    None
 }
