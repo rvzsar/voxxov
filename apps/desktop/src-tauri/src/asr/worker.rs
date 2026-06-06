@@ -8,6 +8,15 @@ use crate::error::{AppError, AppResult};
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
 use std::path::Path;
 
+/// Сырой результат декодирования одного чанка: текст, токены, опциональные
+/// per-token таймстампы и длительности (в секундах, **внутри** чанка).
+pub struct DecodedChunk {
+    pub text: String,
+    pub tokens: Vec<String>,
+    pub timestamps: Option<Vec<f32>>,
+    pub durations: Option<Vec<f32>>,
+}
+
 /// Готовый к декодированию recognizer. Не Clone — живёт в одном воркере.
 pub struct AsrEngine {
     recognizer: OfflineRecognizer,
@@ -44,7 +53,7 @@ impl AsrEngine {
 
     /// Декодировать один моно-чанк (f32) на указанной частоте дискретизации.
     /// Синхронный вызов — должен вызываться из `spawn_blocking`.
-    pub fn decode(&self, samples: &[f32], sample_rate: u32) -> AppResult<String> {
+    pub fn decode(&self, samples: &[f32], sample_rate: u32) -> AppResult<DecodedChunk> {
         let stream = self.recognizer.create_stream();
         // sherpa-onnx C API принимает sample_rate как i32
         stream.accept_waveform(sample_rate as i32, samples);
@@ -52,6 +61,11 @@ impl AsrEngine {
         let result = stream
             .get_result()
             .ok_or_else(|| AppError::Asr("decode returned no result".into()))?;
-        Ok(result.text.trim().to_string())
+        Ok(DecodedChunk {
+            text: result.text.trim().to_string(),
+            tokens: result.tokens,
+            timestamps: result.timestamps,
+            durations: result.durations,
+        })
     }
 }

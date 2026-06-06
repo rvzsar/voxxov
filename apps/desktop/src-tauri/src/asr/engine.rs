@@ -8,8 +8,10 @@
 //! cancellation проверяется между чанками. Сам `decode` отменить нельзя
 //! (sherpa-onnx не поддерживает mid-cancel C-API).
 
+use super::grouping::group_into_segments;
 use super::segment::{read_wav_samples, split_into_segments};
 use super::worker::AsrEngine;
+use super::Transcription;
 use crate::config::AsrConfig;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
@@ -17,14 +19,14 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-/// Main entry point: transcribe audio file → text.
+/// Main entry point: transcribe audio file → text + timed segments.
 pub async fn transcribe(
     state: &AppState,
     job_id: &str,
     audio: &Path,
     cfg: &AsrConfig,
     cancel: CancellationToken,
-) -> AppResult<String> {
+) -> AppResult<Transcription> {
     if !audio.is_file() {
         return Err(AppError::Asr(format!(
             "audio not found: {}",
@@ -129,13 +131,16 @@ pub async fn transcribe(
 
     let engine = Arc::new(engine);
     let total = segments.len();
+    let chunk_dur = audio.samples.len() as f32 / audio.sample_rate as f32;
 
     // 6. Декодировать каждый сегмент
     let mut texts: Vec<String> = Vec::with_capacity(total);
+    let mut timed: Vec<super::TimedSegment> = Vec::new();
     for (i, seg) in segments.into_iter().enumerate() {
         if cancel.is_cancelled() {
             return Err(AppError::Cancelled);
         }
+        let seg_dur = seg.samples.len() as f32 / audio.sample_rate as f32;
         state.log_line(
             job_id,
             format!(
@@ -143,29 +148,45 @@ pub async fn transcribe(
                 i + 1,
                 total,
                 seg.offset_sec,
-                seg.offset_sec + seg.samples.len() as f32 / audio.sample_rate as f32
+                seg.offset_sec + seg_dur
             ),
         );
 
         let eng = Arc::clone(&engine);
-        let text = tokio::task::spawn_blocking(move || {
+        let chunk = tokio::task::spawn_blocking(move || {
             eng.decode(&seg.samples, seg.sample_rate)
         })
         .await
         .map_err(|e| AppError::Asr(format!("decode join: {e}")))??;
 
-        if !text.is_empty() {
-            // Склейка с пробелом; каждый чанк возвращает уже обрезанный текст.
-            texts.push(text);
+        if !chunk.text.is_empty() {
+            texts.push(chunk.text);
         }
+        // Per-token timestamps + durations → сгруппировать в сегменты.
+        let mut segs = group_into_segments(
+            &chunk.tokens,
+            chunk.timestamps.as_deref(),
+            chunk.durations.as_deref(),
+            seg.offset_sec,
+            seg_dur,
+        );
+        timed.append(&mut segs);
     }
 
     let combined = texts.join(" ").trim().to_string();
     state.log_line(
         job_id,
-        format!("ASR: done, {} chars ({} segments)", combined.len(), total),
+        format!(
+            "ASR: done, {} chars ({} segments, {} timed)",
+            combined.len(),
+            total,
+            timed.len()
+        ),
     );
-    Ok(combined)
+    Ok(Transcription {
+        text: combined,
+        segments: timed,
+    })
 }
 
 // --- helpers used both by orchestrator and tests ---

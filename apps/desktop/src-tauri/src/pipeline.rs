@@ -1,6 +1,6 @@
 //! Главный пайплайн: enqueue → metadata → download → audio → transcribe → done.
 
-use crate::asr;
+use crate::asr::{self, TimedSegment};
 use crate::config::AppConfig;
 use crate::error::{AppError, AppResult};
 use crate::ffmpeg::FfmpegRunner;
@@ -137,7 +137,9 @@ async fn run_inner(
     let st2 = state.clone();
     let id2 = job.id.clone();
     state.set_stage(&id2, JobStage::Transcribing, "Распознаём речь…");
-    let text = asr::transcribe(&st2, &id2, &audio_wav, &cfg.asr, token.clone()).await?;
+    let transcription = asr::transcribe(&st2, &id2, &audio_wav, &cfg.asr, token.clone()).await?;
+    let text = transcription.text.clone();
+    let segments = transcription.segments;
 
     // 5) write outputs (txt/srt/json) в output dir
     let out_dir = state.app_handle()
@@ -152,9 +154,17 @@ async fn run_inner(
         let path = out_dir.join(format!("{stem}.{fmt}"));
         let body = match fmt.as_str() {
             "txt" => text.clone(),
-            "srt" => text_to_srt(&text),
-            "json" => format!("{{\"title\":{:?},\"id\":{:?},\"text\":{:?}}}\n",
-                              media.title, media.id, text),
+            "srt" => {
+                // Реальные таймстампы если есть, иначе фоллбэк по длине текста.
+                if segments.is_empty() {
+                    text_to_srt_fallback(&text)
+                } else {
+                    text_to_srt_from_segments(&segments)
+                }
+            }
+            "json" => format!("{{\"title\":{:?},\"id\":{:?},\"text\":{:?},\"segments\":[{}]}}\n",
+                              media.title, media.id, text,
+                              segments_to_json(&segments)),
             _ => text.clone(),
         };
         std::fs::write(&path, body)?;
@@ -181,17 +191,52 @@ fn sanitize(s: &str) -> String {
         .to_string()
 }
 
-fn text_to_srt(text: &str) -> String {
-    // Without segment timestamps from GigaAM, produce a single subtitle block
-    // spanning 00:00:00 → end-of-text. Full timestamps will be added once
-    // the ASR engine returns time-aligned segments.
+fn text_to_srt_fallback(text: &str) -> String {
+    // Без per-token timestamps (например, cmd_fallback): оценочная
+    // длительность по кол-ву символов / 150 симв/мин, как раньше.
     if text.trim().is_empty() {
         return String::new();
     }
-    // Rough estimate: ~150 chars/min for Russian speech
     let duration_sec = ((text.len() as f64 / 150.0) * 60.0).ceil() as u64;
     let end = format_srt_time(duration_sec);
     format!("1\n00:00:00,000 --> {end}\n{text}\n")
+}
+
+fn text_to_srt_from_segments(segments: &[TimedSegment]) -> String {
+    if segments.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (i, seg) in segments.iter().enumerate() {
+        if seg.text.is_empty() {
+            continue;
+        }
+        let start = format_srt_time_f(seg.start_sec);
+        let end = format_srt_time_f(seg.end_sec.max(seg.start_sec + 0.05));
+        out.push_str(&format!(
+            "{}\n{} --> {}\n{}\n\n",
+            i + 1,
+            start,
+            end,
+            seg.text
+        ));
+    }
+    out
+}
+
+fn segments_to_json(segments: &[TimedSegment]) -> String {
+    let parts: Vec<String> = segments
+        .iter()
+        .map(|s| {
+            format!(
+                "{{\"start\":{:.3},\"end\":{:.3},\"text\":{}}}",
+                s.start_sec,
+                s.end_sec,
+                serde_json::Value::String(s.text.clone()),
+            )
+        })
+        .collect();
+    parts.join(",")
 }
 
 fn format_srt_time(total_sec: u64) -> String {
@@ -199,6 +244,15 @@ fn format_srt_time(total_sec: u64) -> String {
     let m = (total_sec % 3600) / 60;
     let s = total_sec % 60;
     format!("{h:02}:{m:02}:{s:02},000")
+}
+
+fn format_srt_time_f(total_sec: f32) -> String {
+    let total_ms = (total_sec.max(0.0) * 1000.0).round() as u64;
+    let h = total_ms / 3_600_000;
+    let m = (total_ms / 60_000) % 60;
+    let s = (total_ms / 1000) % 60;
+    let ms = total_ms % 1000;
+    format!("{h:02}:{m:02}:{s:02},{ms:03}")
 }
 
 fn short_dur(s: Option<u64>) -> String {
