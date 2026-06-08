@@ -2,8 +2,15 @@
 #
 # `net.git-fetch-with-cli = true` — use the `git` CLI for fetching deps.
 # This avoids crates.io sparse-index HTTP rate limits when resolving
-# the `[patch.crates-io] lofty = { git = ... }` entry in workspace Cargo.toml.
+# the [patch.crates-io] lofty = { git = ... } entry in workspace Cargo.toml.
 # Also works around some cargo proxy/auth issues in CI sandboxes.
 
 [net]
 git-fetch-with-cli = true
+
+# Static-link the MSVC C runtime so the resulting .exe does NOT require
+# the Visual C++ Redistributable to be installed on the target machine.
+# The prebuilt sherpa-onnx libraries in `target/sherpa-onnx-prebuilt/`
+# are already `-MT` (static), so this matches and avoids CRT conflicts.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

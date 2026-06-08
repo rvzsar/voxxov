@@ -24,109 +24,6 @@ jobs:
           npm ci
           npm run check
 
-  build-linux:
-    name: Build (linux-x86_64, debug)
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: apps/desktop/src-tauri
-          key: linux-x86_64
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-
-      - name: Linux system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            wget \
-            file \
-            pkg-config \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            patchelf
-
-      # tauri.conf.json has `beforeBuildCommand: npm run build`, so
-      # tauri-action triggers it. No need for a separate `npm run build`
-      # step here — that would build the frontend twice.
-      - name: Build Tauri bundle (debug)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: apps/desktop
-          # tauri-action auto-uploads the bundle as an artifact.
-          # Set `include: ""` to disable its auto-upload; we'll upload
-          # manually below with a stable name.
-          include: ""
-          args: --debug
-
-      - name: Upload Linux debug bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: gigaam-desktop-linux-debug
-          path: apps/desktop/src-tauri/target/debug/bundle/**
-          if-no-files-found: warn
-          retention-days: 14
-
-  build-macos:
-    name: Build (macos-aarch64, debug)
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Show host
-        run: |
-          uname -a
-          uname -m
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: apps/desktop/src-tauri
-          key: macos-aarch64
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-
-      # See note in build-linux: `beforeBuildCommand` builds the frontend.
-      - name: Build Tauri bundle (debug)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: apps/desktop
-          include: ""
-          args: --debug
-
-      - name: Upload macOS aarch64 debug bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: gigaam-desktop-macos-aarch64-debug
-          path: apps/desktop/src-tauri/target/debug/bundle/**
-          if-no-files-found: warn
-          retention-days: 14
-
   build-windows:
     name: Build (windows-msvc, debug)
     runs-on: windows-latest
@@ -152,15 +49,22 @@ jobs:
           workspaces: apps/desktop/src-tauri
           key: windows-x86_64-msvc
 
-      # See note in build-linux: `beforeBuildCommand` builds the frontend.
+      # tauri.conf.json sets `beforeBuildCommand: npm run build`, which
+      # tauri-action runs automatically. `npm ci` must run first so
+      # node_modules exists when the frontend builds.
+      - name: Install npm dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
       - name: Build Tauri bundle (debug)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/desktop
-          include: ""
-          args: --debug --target x86_64-pc-windows-msvc
+          # NSIS only: skips the WiX/MSI download, faster & more reliable
+          # in CI. Release workflow builds both via `targets: "all"`.
+          args: --debug --target x86_64-pc-windows-msvc --bundles nsis
 
       - name: Upload Windows msvc debug bundle
         uses: actions/upload-artifact@v4
