@@ -313,8 +313,7 @@ fn text_to_srt_from_segments(segments: &[TimedSegment]) -> String {
 }
 
 /// Человеко-читаемая TXT-расшифровка: одна строка на сегмент с
-/// `[HH:MM:SS → HH:MM:SS] текст`. Удобно для чтения, в отличие от
-/// SRT (где `-->` и номера) и от голого текста (всё в одну строку).
+/// `[start.s - end.s] текст` (секунды с 2 знаками после запятой).
 fn text_to_txt_from_segments(segments: &[TimedSegment]) -> String {
     let mut out = String::new();
     for seg in segments {
@@ -323,22 +322,11 @@ fn text_to_txt_from_segments(segments: &[TimedSegment]) -> String {
             continue;
         }
         out.push_str(&format!(
-            "[{} → {}] {}\n",
-            format_hms(seg.start_sec),
-            format_hms(seg.end_sec),
-            text,
+            "  [{:.2} - {:.2}] {}\n",
+            seg.start_sec, seg.end_sec, text,
         ));
     }
     out
-}
-
-/// Секунды → `HH:MM:SS` (zero-padded). Для видео короче часа HH=00.
-fn format_hms(sec: f32) -> String {
-    let total = sec.max(0.0) as u64;
-    let h = total / 3600;
-    let m = (total % 3600) / 60;
-    let s = total % 60;
-    format!("{h:02}:{m:02}:{s:02}")
 }
 
 fn segments_to_json(media: &MediaInfo, text: &str, segments: &[TimedSegment]) -> String {
