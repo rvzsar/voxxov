@@ -3,7 +3,7 @@
 use crate::asr::{self, TimedSegment};
 use crate::config::AppConfig;
 use crate::error::{AppError, AppResult};
-use crate::ffmpeg::FfmpegRunner;
+use crate::ffmpeg::{FfmpegEvent, FfmpegRunner};
 use crate::models;
 use crate::paths;
 use crate::state::AppState;
@@ -191,8 +191,23 @@ async fn run_inner(
                 &out_p,
                 sr,
                 true,
+                media.duration_sec.map(|d| d as f32),
                 token.clone(),
-                move |line| st2.log_line(&id2, format!("ffmpeg: {line}")),
+                move |event| match event {
+                    FfmpegEvent::Log(line) => st2.log_line(&id2, format!("ffmpeg: {line}")),
+                    FfmpegEvent::Progress(pct) => st2.update_job(
+                        &id2,
+                        JobUpdate {
+                            progress: Some(Progress {
+                                pct,
+                                label: "Извлекаем аудио…".into(),
+                                speed: None,
+                                eta: None,
+                            }),
+                            ..Default::default()
+                        },
+                    ),
+                },
             )
             .await?;
     }
@@ -224,7 +239,14 @@ async fn run_inner(
     for fmt in &cfg.output.formats {
         let path = out_dir.join(format!("{stem}.{fmt}"));
         let body = match fmt.as_str() {
-            "txt" => text.clone(),
+            "txt" => {
+                if segments.is_empty() {
+                    // No timestamps from ASR (cmd: fallback) — write raw.
+                    text.clone()
+                } else {
+                    text_to_txt_from_segments(&segments)
+                }
+            }
             "srt" => {
                 if segments.is_empty() {
                     text_to_srt_fallback(&text)
@@ -288,6 +310,35 @@ fn text_to_srt_from_segments(segments: &[TimedSegment]) -> String {
         ));
     }
     out
+}
+
+/// Человеко-читаемая TXT-расшифровка: одна строка на сегмент с
+/// `[HH:MM:SS → HH:MM:SS] текст`. Удобно для чтения, в отличие от
+/// SRT (где `-->` и номера) и от голого текста (всё в одну строку).
+fn text_to_txt_from_segments(segments: &[TimedSegment]) -> String {
+    let mut out = String::new();
+    for seg in segments {
+        let text = seg.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            "[{} → {}] {}\n",
+            format_hms(seg.start_sec),
+            format_hms(seg.end_sec),
+            text,
+        ));
+    }
+    out
+}
+
+/// Секунды → `HH:MM:SS` (zero-padded). Для видео короче часа HH=00.
+fn format_hms(sec: f32) -> String {
+    let total = sec.max(0.0) as u64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    format!("{h:02}:{m:02}:{s:02}")
 }
 
 fn segments_to_json(media: &MediaInfo, text: &str, segments: &[TimedSegment]) -> String {
