@@ -1,0 +1,34 @@
+[proxy]
+kind = "none"
+
+[download]
+format = "bv*+ba/b"
+maxHeight = 1080
+audioOnly = false
+embedSubs = false
+concurrentFragments = 4
+retries = 3
+overwrite = false
+
+[asr]
+modelDir = 'C:\dev\gigaam\models'
+sampleRate = 16000
+language = "ru"
+device = "cpu"
+maxSegmentSec = 30.0
+overlapSec = 1.0
+beamSize = 5
+
+[output]
+dir = ""
+formats = [
+    "srt",
+    "json",
+    "txt",
+]
+
+[logging]
+level = "info"
+file = true
+maxSizeMb = 5
+keepFiles = 3

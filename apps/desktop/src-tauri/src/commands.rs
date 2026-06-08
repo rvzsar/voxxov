@@ -3,7 +3,6 @@
 use crate::config::{self, AppConfig};
 use crate::error::{AppError, AppResult};
 use crate::models::{self, ModelStatus};
-use crate::paths;
 use crate::pipeline;
 use crate::state::AppState;
 use crate::types::{FileInfo, Job, JobId, JobSource, MediaInfo, SidecarStatus};

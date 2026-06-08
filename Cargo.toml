@@ -15,14 +15,20 @@ authors = ["GigaAM Desktop contributors"]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-build = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
-tauri-plugin-store = "2"
 tauri-plugin-opener = "2"
 
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime — features trimmed to what we actually use.
+# (was ["full"] which pulled in net, signal, time, etc. — all unused.)
+tokio = { version = "1", features = [
+    "rt-multi-thread",  # tauri::async_runtime::spawn on multiple threads
+    "macros",           # tokio::select!
+    "sync",             # broadcast, OnceCell, Mutex
+    "fs",               # tokio::fs::* in commands::scan_folder
+    "io-util",          # AsyncBufReadExt, BufReader in ffmpeg
+    "process",          # tokio::process::Command for ffmpeg/yt-dlp
+] }
 tokio-util = "0.7"
 async-trait = "0.1"
-futures = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -36,8 +42,8 @@ toml = "0.8"
 anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tracing-appender = "0.2"
+# json feature removed: we use plain fmt, not JSON-formatted logs.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # ONNX Runtime (sherpa-onnx — native C, static linking)
 sherpa-onnx = { version = "1.13.2", default-features = false, features = ["static"] }
@@ -50,19 +56,12 @@ yt-dlp = { version = "2.7.2", default-features = false, features = ["cache-redb"
 # Версия 0.13 совпадает с transitive-зависимостью крейта `yt-dlp`.
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 
-# CLI & progress
-clap = { version = "4", features = ["derive"] }
-indicatif = "0.17"
-
 # Utilities
-uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4" }
 once_cell = "1"
 parking_lot = "0.12"
 sha2 = "0.10"
-
-# Database (для истории распознаваний, Sprint 4)
-rusqlite = { version = "0.32", features = ["bundled"] }
 
 # yt-dlp 2.7.2 зависит от `lofty ^0.23.2`, но все 0.23.x версии yanked
 # 12.04.2026. Patch на 0.23.3 с git форка (последняя совместимая не-yanked).
