@@ -16,15 +16,20 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::info;
 
-/// Тег Release'а с моделями. При обновлении моделей — bump здесь
-/// и перевыпустить Release с тем же набором файлов.
-pub const MODEL_RELEASE_TAG: &str = "v0.1.0-models";
+/// Тег Release'а с моделями GigaAM-V3 в репо `amidexe/govorun-lite`.
+/// При обновлении моделей — bump здесь и перевыпустить Release с тем же
+/// набором файлов.
+pub const MODEL_RELEASE_TAG: &str = "model-gigaam-v3";
 
-/// Base URL для downloads. Шаблон: `{base_url}/{tag}/{filename}`.
-pub const MODEL_RELEASE_BASE_URL: &str =
-    "https://github.com/your-org/gigaam-desktop/releases/download";
+/// URL до (но не включая) release tag. Шаблон:
+/// `{base_url}/{tag}/{filename}`. Хранится отдельно от TAG, чтобы тег
+/// было видно в одном месте с хешами.
+const MODEL_RELEASE_BASE_URL: &str =
+    "https://github.com/amidexe/govorun-lite/releases/download";
 
-/// Имя файла (одно и то же в Release и в `model_dir`).
+/// File name as it appears in the release → where it's stored locally.
+/// (Currently the same; release_name was removed in the ModelFile
+/// collapse so the two stay identical by convention.)
 const MODEL_FILES: &[&str] = &[
     "gigaam_v3_e2e_rnnt_encoder_int8.onnx",
     "gigaam_v3_e2e_rnnt_decoder.onnx",
@@ -35,9 +40,9 @@ const MODEL_FILES: &[&str] = &[
 /// Sanity-check: файл меньше — считаем битым и перекачиваем.
 const MIN_FILE_SIZES: &[(&str, u64)] = &[
     ("gigaam_v3_e2e_rnnt_encoder_int8.onnx", 100_000_000), // ~319 MB
-    ("gigaam_v3_e2e_rnnt_decoder.onnx", 1_000_000),        // ~4.6 MB
-    ("gigaam_v3_e2e_rnnt_joint.onnx", 500_000),            // ~2.7 MB
-    ("gigaam_v3_e2e_rnnt_tokens.txt", 1_000),              // ~13 KB
+    ("gigaam_v3_e2e_rnnt_decoder.onnx", 1_000_000),         // ~4.6 MB
+    ("gigaam_v3_e2e_rnnt_joint.onnx", 500_000),             // ~2.7 MB
+    ("gigaam_v3_e2e_rnnt_tokens.txt", 1_000),               // ~13 KB
 ];
 
 /// SHA256 (hex) для каждого файла. Пустая строка = пропустить проверку.
