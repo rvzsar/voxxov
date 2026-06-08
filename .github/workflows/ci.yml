@@ -46,6 +46,26 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo build
 
+      - name: List build outputs
+        working-directory: apps/desktop/src-tauri
+        run: |
+          echo '=== Binary ==='
+          ls -la target/debug/gigaam-desktop* target/debug/*.so 2>/dev/null | head -20
+          echo '=== Frontend dist ==='
+          ls -la ../dist/ 2>&1 | head -20
+
+      - name: Upload artifacts (linux debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: gigaam-desktop-linux-debug
+          path: |
+            apps/desktop/src-tauri/target/debug/gigaam-desktop
+            apps/desktop/src-tauri/target/debug/gigaam-desktop.exe
+            apps/desktop/src-tauri/target/debug/*.so
+            apps/desktop/dist/
+          retention-days: 14
+          if-no-files-found: warn
+
   check-windows-msvc:
     name: Check (windows-msvc)
     runs-on: windows-latest
@@ -99,3 +119,55 @@ jobs:
         run: |
           npm ci
           npm run check
+
+  build-macos:
+    name: Build (macos-aarch64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Install frontend deps
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build frontend (vite)
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Rust check
+        working-directory: apps/desktop/src-tauri
+        run: cargo check
+
+      - name: Rust build
+        working-directory: apps/desktop/src-tauri
+        run: cargo build
+
+      - name: List build outputs
+        working-directory: apps/desktop/src-tauri
+        run: |
+          echo '=== Binary ==='
+          ls -la target/debug/gigaam-desktop* 2>&1 | head -20
+
+      - name: Upload artifacts (macos aarch64 debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: gigaam-desktop-macos-aarch64-debug
+          path: |
+            apps/desktop/src-tauri/target/debug/gigaam-desktop
+            apps/desktop/dist/
+          retention-days: 14
+          if-no-files-found: warn
