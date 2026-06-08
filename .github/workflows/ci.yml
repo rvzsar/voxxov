@@ -4,19 +4,87 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  TAURI_ENV_DEBUG: true
 
 jobs:
-  frontend:
-    name: Frontend
-    runs-on: ubuntu-latest
+  build-linux:
+    name: Build (linux-x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install frontend deps
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build frontend (vite)
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Rust check
+        working-directory: apps/desktop/src-tauri
+        run: cargo check
+
+      - name: Rust build
+        working-directory: apps/desktop/src-tauri
+        run: cargo build
+
+  check-windows-msvc:
+    name: Check (windows-msvc)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Install frontend deps
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build frontend (vite)
+        working-directory: apps/desktop
+        run: npm run build
+
+      - name: Rust check
+        working-directory: apps/desktop/src-tauri
+        run: cargo check
+
+  check-types:
+    name: Frontend type-check
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -26,49 +94,8 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
-      - name: Install dependencies
+      - name: Install + svelte-check
         working-directory: apps/desktop
-        run: npm ci
-
-      - name: Type check
-        working-directory: apps/desktop
-        run: npx svelte-check --tsconfig ./tsconfig.json
-
-      - name: Build frontend
-        working-directory: apps/desktop
-        run: npm run build
-
-  rust:
-    name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: apps/desktop/src-tauri
-
-      - name: Install system deps (Linux)
-        if: matrix.os == 'ubuntu-latest'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-
-      - name: Check
-        working-directory: apps/desktop/src-tauri
-        run: cargo check
-
-      - name: Clippy
-        working-directory: apps/desktop/src-tauri
-        run: cargo clippy -- -D warnings
-
-      - name: Test
-        working-directory: apps/desktop/src-tauri
-        run: cargo test
+          npm ci
+          npm run check

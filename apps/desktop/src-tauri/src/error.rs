@@ -8,9 +8,6 @@ pub enum AppError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("config: {0}")]
-    Config(#[from] config::ConfigError),
-
     #[error("toml decode: {0}")]
     TomlDe(#[from] toml::de::Error),
 
@@ -53,7 +50,6 @@ impl AppError {
     pub fn code(&self) -> &'static str {
         match self {
             AppError::Io(_) => "io",
-            AppError::Config(_) => "config",
             AppError::TomlDe(_) | AppError::TomlSer(_) => "toml",
             AppError::Json(_) => "json",
             AppError::YtDlp(_) => "ytdlp",

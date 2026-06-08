@@ -14,8 +14,7 @@ pub struct FfmpegRunner {
 }
 
 impl FfmpegRunner {
-    /// Сконструировать из `custom` пути (cfg.download.custom_ffmpeg_path),
-    /// либо — из auto-detected пути в `sidecar::ffmpeg_path`.
+    /// Из `custom` пути, иначе — auto-detected из `sidecar::ffmpeg_path`.
     pub fn resolve(
         app: &tauri::AppHandle,
         custom: Option<&str>,
@@ -31,9 +30,8 @@ impl FfmpegRunner {
         Ok(Self { bin })
     }
 
-    /// Сконвертировать вход в 16kHz mono PCM s16le WAV.
-    /// `on_log` вызывается для каждой строки stderr ffmpeg.
-    /// `cancel` прерывает процесс при сигнале.
+    /// Сконвертировать вход → 16kHz mono PCM s16le WAV.
+    /// `on_log` — на каждую строку stderr. `cancel` прерывает процесс.
     pub async fn extract_audio(
         &self,
         input: &Path,
@@ -41,7 +39,7 @@ impl FfmpegRunner {
         sample_rate: u32,
         normalize: bool,
         cancel: CancellationToken,
-        mut on_log: impl FnMut(String) + Send,
+        mut on_log: impl FnMut(String) + Send + 'static,
     ) -> AppResult<()> {
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
@@ -80,8 +78,7 @@ impl FfmpegRunner {
             .spawn()
             .map_err(|e| AppError::Ffmpeg(format!("spawn: {e}")))?;
         if let Some(stderr) = child.stderr.take() {
-            // `on_log` это `FnMut`, мы move'аем его в spawn.
-            // Между строками concurrent не происходит (одна задача).
+            // on_log — FnMut, move'аем в spawn. Concurrent'а нет (одна задача).
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {

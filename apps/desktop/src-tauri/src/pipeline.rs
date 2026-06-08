@@ -4,11 +4,46 @@ use crate::asr::{self, TimedSegment};
 use crate::config::AppConfig;
 use crate::error::{AppError, AppResult};
 use crate::ffmpeg::FfmpegRunner;
+use crate::models;
 use crate::paths;
 use crate::state::AppState;
 use crate::types::{Job, JobSource, JobStage, JobUpdate, MediaInfo, Progress};
 use chrono::Utc;
 use std::path::PathBuf;
+use tauri::Manager;
+
+async fn ensure_asr_model(state: &AppState, job_id: &str) -> AppResult<PathBuf> {
+    // User-configured path имеет приоритет.
+    let user_path = state.config().asr.model_path.clone();
+    if !user_path.is_empty() {
+        return Ok(PathBuf::from(user_path));
+    }
+    let dir = models::default_model_dir(&state.app);
+    let status = models::check_status(&dir);
+    if status.missing.is_empty() {
+        return Ok(dir);
+    }
+    state.log_line(
+        job_id,
+        format!(
+            "ASR: downloading {} file(s) (~{} MB) from GitHub release {}",
+            status.missing.len(),
+            status
+                .missing
+                .iter()
+                .map(|m| m.size.max(0))
+                .sum::<u64>()
+                / 1_000_000,
+            status.release_tag
+        ),
+    );
+    models::download_all(&dir, |downloaded, total| {
+        // Per-file callback, межфайловый прогресс не виден — только лог.
+        tracing::info!("model: {} / {} bytes", downloaded, total);
+    })
+    .await?;
+    Ok(dir)
+}
 
 pub async fn run_job(state: AppState, cfg: AppConfig, job: Job) -> AppResult<()> {
     let id = job.id.clone();
@@ -30,8 +65,9 @@ pub async fn run_job(state: AppState, cfg: AppConfig, job: Job) -> AppResult<()>
                     }),
                     finished_at: Some(Utc::now().to_rfc3339()),
                     transcript_path: Some(transcript_path.to_string_lossy().to_string()),
-                    transcript_preview: Some(preview),
+                    transcript_preview: Some(preview.clone()),
                     error: None,
+                    media: None,
                 },
             );
             let _ = state.events.send(crate::types::BackendEvent::JobDone {
@@ -170,10 +206,12 @@ async fn run_inner(
 
     // 4) Transcribe.
     state.set_stage(&job.id, JobStage::Transcribing, "Распознаём речь…");
+    let model_path = ensure_asr_model(&state, &job.id).await?;
     let transcription = asr::transcribe(
         &state.clone(),
         &job.id,
         &audio_wav,
+        &model_path.to_string_lossy(),
         &cfg.asr,
         token.clone(),
     )
@@ -181,7 +219,7 @@ async fn run_inner(
     let text = transcription.text;
     let segments = transcription.segments;
 
-    // 5) Write outputs (txt/srt/json) в output dir.
+    // 5) Write outputs (txt/srt/json).
     let out_dir = state
         .app
         .path()
@@ -257,8 +295,9 @@ fn text_to_srt_from_segments(segments: &[TimedSegment]) -> String {
         }
         let start = format_srt_time_f(seg.start_sec);
         let end = format_srt_time_f(seg.end_sec.max(seg.start_sec + 0.05));
+        let text = &seg.text;
         out.push_str(&format!(
-            "{i}\n{start} --> {end}\n{seg.text}\n\n"
+            "{i}\n{start} --> {end}\n{text}\n\n"
         ));
     }
     out

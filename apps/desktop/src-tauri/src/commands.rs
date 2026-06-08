@@ -2,6 +2,7 @@
 
 use crate::config::{self, AppConfig};
 use crate::error::{AppError, AppResult};
+use crate::models::{self, ModelStatus};
 use crate::paths;
 use crate::pipeline;
 use crate::state::AppState;
@@ -24,8 +25,7 @@ pub async fn enqueue_local(
     enqueue(state, JobSource::LocalFile, path).await
 }
 
-/// Общая логика для `enqueue_url` и `enqueue_local`: валидация,
-/// создание Job, spawn pipeline.
+/// Валидация + создание Job + spawn pipeline.
 async fn enqueue(
     state: tauri::State<'_, AppState>,
     source: JobSource,
@@ -148,6 +148,49 @@ async fn scan_dir_recursive(dir: &std::path::Path, out: &mut Vec<FileInfo>) -> A
         }
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn check_model_status(
+    app: tauri::AppHandle,
+    model_path: Option<String>,
+) -> ModelStatus {
+    let dir = model_path
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| models::default_model_dir(&app));
+    models::check_status(&dir)
+}
+
+#[tauri::command]
+pub async fn download_model(
+    app: tauri::AppHandle,
+    job_id: String,
+    model_path: Option<String>,
+) -> AppResult<ModelStatus> {
+    let state = app.state::<AppState>();
+    let dir = model_path
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| models::default_model_dir(&app));
+    let job_id_for_log = job_id.clone();
+    state.log_line(&job_id, "model: starting download");
+
+    let result = models::download_all(&dir, |downloaded, total| {
+        let pct = if total > 0 {
+            (downloaded as f32 / total as f32) * 100.0
+        } else {
+            0.0
+        };
+        tracing::info!("model: {}% ({} / {})", pct as u32, downloaded, total);
+    })
+    .await;
+
+    match &result {
+        Ok(_) => state.log_line(&job_id_for_log, "model: download complete"),
+        Err(e) => state.log_line(&job_id_for_log, format!("model: download failed: {e}")),
+    }
+    result
 }
 
 #[tauri::command]

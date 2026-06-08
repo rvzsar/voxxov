@@ -6,9 +6,9 @@
 //! auto-install через крейт (что и происходит сейчас).
 
 use std::path::PathBuf;
+use tauri::Manager;
 
-/// Директория для yt-dlp + ffmpeg.
-/// `None` означает «использовать автоопределение» (через `tauri::path`).
+/// Директория для yt-dlp + ffmpeg. `None` = автоопределение через `tauri::path`.
 pub fn bin_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
     if let Some(handle) = app {
         if let Ok(d) = handle.path().app_data_dir() {

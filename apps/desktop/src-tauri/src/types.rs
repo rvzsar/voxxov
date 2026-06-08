@@ -124,9 +124,8 @@ pub struct FileInfo {
     pub size_bytes: u64,
 }
 
-/// Полное обновление полей Job. Не «patch» в смысле частичного —
-/// фронт ожидает полные значения. `skip_serializing_if = "Option::is_none"`
-/// нужен только потому, что `MediaInfo` большая и не nullable.
+/// Update Job, не partial — фронт ожидает полные значения.
+/// `skip_serializing_if` нужен потому, что `MediaInfo` не nullable.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobUpdate {

@@ -20,10 +20,13 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// Main entry point: transcribe audio file → text + timed segments.
+/// `model_path` — директория с 4 файлами GigaAM; проверка/загрузка
+/// делается в `pipeline.rs::ensure_asr_model` до этого вызова.
 pub async fn transcribe(
     state: &AppState,
     job_id: &str,
     audio: &Path,
+    model_path: &str,
     cfg: &AsrConfig,
     cancel: CancellationToken,
 ) -> AppResult<Transcription> {
@@ -33,19 +36,19 @@ pub async fn transcribe(
             audio.display()
         )));
     }
-    if cfg.model_path.is_empty() {
+    if model_path.is_empty() {
         return Err(AppError::Asr("model_path is empty".into()));
     }
 
-    state.log_line(job_id, format!("ASR: loading model from {}", cfg.model_path));
+    state.log_line(job_id, format!("ASR: loading model from {model_path}"));
 
     // cmd: prefix — fallback to external CLI.
     if let Some(cmd) = cfg.model_path.strip_prefix("cmd:") {
         return super::cmd_fallback::transcribe_cmd(state, job_id, audio, cmd).await;
     }
 
-    // 1. Discover model files.
-    let (encoder, decoder, joiner, tokens) = discover_model_files(&cfg.model_path)?;
+    // Discover model files.
+    let (encoder, decoder, joiner, tokens) = discover_model_files(model_path)?;
     state.log_line(
         job_id,
         format!(
@@ -57,16 +60,15 @@ pub async fn transcribe(
         ),
     );
 
-    // 2. Provider.
     let provider = match cfg.device {
         crate::config::AsrDevice::Cuda => "cuda",
         crate::config::AsrDevice::Directml => "directml",
-        // Openvino не отличается от cpu в текущей версии sherpa-onnx.
+        // Openvino = cpu в текущей версии sherpa-onnx.
         _ => "cpu",
     };
     let num_threads = num_cpus().min(4);
 
-    // 3. Read WAV в spawn_blocking (hound — sync I/O).
+    // hound — sync I/O, уходим в blocking pool.
     let audio_path = audio.to_path_buf();
     let samples = tokio::task::spawn_blocking(move || read_wav_samples(&audio_path))
         .await
@@ -82,7 +84,7 @@ pub async fn transcribe(
         ),
     );
 
-    // 4. Сегментация.
+    // Сегментация.
     let seg_sec = cfg.max_segment_sec.max(1.0);
     let overlap_sec = cfg.overlap_sec.max(0.0);
     let segments = split_into_segments(&samples.samples, samples.sample_rate, seg_sec, overlap_sec);
@@ -101,7 +103,7 @@ pub async fn transcribe(
         );
     }
 
-    // 5. Создать recognizer в spawn_blocking (тяжёлая загрузка ONNX).
+    // Recognizer (тяжёлая загрузка ONNX).
     state.log_line(
         job_id,
         format!("ASR: creating recognizer (threads={num_threads}, provider={provider})"),
@@ -123,7 +125,6 @@ pub async fn transcribe(
     let total = segments.len();
     let chunk_dur = samples.samples.len() as f32 / samples.sample_rate as f32;
 
-    // 6. Декодировать каждый сегмент.
     let mut texts: Vec<String> = Vec::with_capacity(total);
     let mut timed: Vec<super::TimedSegment> = Vec::new();
     for (i, seg) in segments.into_iter().enumerate() {
@@ -152,7 +153,6 @@ pub async fn transcribe(
         if !chunk.text.is_empty() {
             texts.push(chunk.text);
         }
-        // Per-token timestamps + durations → сгруппировать в сегменты.
         let mut segs = group_into_segments(
             &chunk.tokens,
             chunk.timestamps.as_deref(),
@@ -179,10 +179,9 @@ pub async fn transcribe(
     })
 }
 
-// --- helpers used both by orchestrator and tests ---
+// --- helpers ---
 
-/// Discover encoder, decoder, joiner, и tokens файлы в директории моделей.
-/// `model_path` должен быть директорией, содержащей все 4 файла.
+/// Найти encoder/decoder/joiner/tokens в `model_path` (должна быть директорией).
 pub fn discover_model_files(
     model_path: &str,
 ) -> AppResult<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)>

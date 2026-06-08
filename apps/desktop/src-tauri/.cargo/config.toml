@@ -1,0 +1,9 @@
+# Cargo config for this project.
+#
+# `net.git-fetch-with-cli = true` — use the `git` CLI for fetching deps.
+# This avoids crates.io sparse-index HTTP rate limits when resolving
+# the `[patch.crates-io] lofty = { git = ... }` entry in workspace Cargo.toml.
+# Also works around some cargo proxy/auth issues in CI sandboxes.
+
+[net]
+git-fetch-with-cli = true

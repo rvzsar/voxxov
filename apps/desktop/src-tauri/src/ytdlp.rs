@@ -27,14 +27,12 @@ const OUTPUT_BASENAME: &str = "source";
 const DEFAULT_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 GigaAM-Desktop/0.1";
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-/// Unit struct, namespace для публичных методов. Сам `Downloader`
-/// живёт в `AppState.downloader` (см. `state.rs`).
+/// Namespace; сам `Downloader` живёт в `AppState.downloader`.
 pub struct YtDlpRunner;
 
 impl YtDlpRunner {
     /// Получить downloader из `AppState`, инициализируя при первом вызове.
-    /// При первом вызове крейт `yt-dlp` скачает yt-dlp+ffmpeg в
-    /// `$APPDATA/GigaAM/bin/` (может занять несколько секунд).
+    /// Крейт `yt-dlp` при init скачает yt-dlp+ffmpeg в `$APPDATA/GigaAM/bin/`.
     pub async fn get(state: &AppState) -> AppResult<Arc<Downloader>> {
         let cfg = state.config();
         let bin_dir = crate::sidecar::bin_dir(Some(&state.app));
@@ -47,8 +45,8 @@ impl YtDlpRunner {
             crate::sidecar::ffmpeg_path(Some(&state.app)),
         );
 
-        // OnceCell не умеет Result-возврат из init closure — храним Result
-        // внутри и пробрасываем в caller.
+        // OnceCell.get_or_init не возвращает Result из init — храним
+        // Result внутри и пробрасываем caller'у.
         let cfg_for_init = cfg.clone();
         let result = state
             .downloader
@@ -71,15 +69,15 @@ impl YtDlpRunner {
         info!("yt-dlp: initializing (bin dir: {})", bin_dir.display());
 
         // `output_dir` ставим в `bin_dir`, чтобы случайный `download_video(..)`
-        // (без `to_path`) не записал в системный PATH. Мы всегда
-        // используем `download_video_to_path`, так что это не критично.
-        let mut builder = Downloader::with_new_binaries(bin_dir.clone(), bin_dir)
+        // (без `to_path`) не записал в системный PATH. Мы всегда используем
+        // `download_video_to_path`, так что это по сути no-op safety net.
+        let builder = Downloader::with_new_binaries(bin_dir.clone(), bin_dir)
             .await
             .map_err(|e| AppError::Other(format!("yt-dlp init: {e}")))?;
 
-        // Args — до `build()`, на builder (мутабельный, не shared).
-        builder.append_args(build_args(&cfg.download));
-        builder.append_args(proxy::to_args(&cfg.proxy));
+        let mut all_args = build_args(&cfg.download);
+        all_args.extend(proxy::to_args(&cfg.proxy));
+        let builder = builder.with_args(all_args);
 
         let mut downloader = builder
             .build()
@@ -87,15 +85,13 @@ impl YtDlpRunner {
             .map_err(|e| AppError::Other(format!("yt-dlp build: {e}")))?;
 
         // Cookies / UA / timeout — на `&mut Downloader`. Clone расшаривает
-        // внутреннее состояние через Arc, поэтому настройки применяются
-        // ко всем future-операциям. Config у нас меняется только при
-        // рестарте приложения, так что это OK.
+        // внутреннее состояние через Arc, так что настройки применяются
+        // ко всем future-операциям. Конфиг меняется только при рестарте.
         if let Some(cookies) = cfg.download.cookie_file.as_deref() {
             if !cookies.is_empty() {
                 downloader.set_cookies(cookies);
             }
         }
-        // UA: если user задал — используем его; иначе — наш default.
         let ua = cfg
             .download
             .user_agent
@@ -109,7 +105,6 @@ impl YtDlpRunner {
         Ok(Arc::new(downloader))
     }
 
-    /// Fetch метаданных для URL.
     pub async fn fetch_metadata(state: &AppState, url: &str) -> AppResult<MediaInfo> {
         let downloader = Self::get(state).await?;
         let v = downloader
@@ -119,7 +114,7 @@ impl YtDlpRunner {
         Ok(video_to_media(&v))
     }
 
-    /// Скачать видео в `out_dir`. Возвращает путь к скачанному файлу.
+    /// Скачать видео в `out_dir/source.<ext>`. Возвращает путь к файлу.
     pub async fn download(
         state: &AppState,
         job_id: &str,
@@ -131,14 +126,12 @@ impl YtDlpRunner {
         let downloader = Self::get(state).await?;
         std::fs::create_dir_all(out_dir).map_err(AppError::Io)?;
 
-        // 1) Fetch метаданных.
         let video = downloader
             .fetch_video_infos(url)
             .await
             .map_err(|e| AppError::YtDlp(format!("{e}")))?;
 
-        // 2) Подписка на events. `events_task` живёт пока не abort'нем
-        // или пока broadcast::Receiver не вернёт Closed.
+        // events_task живёт пока не abort'нем или Receiver не вернёт Closed.
         let mut events_rx = downloader.subscribe_events();
         let state_for_events = state.clone();
         let job_id_owned = job_id.to_string();
@@ -154,8 +147,6 @@ impl YtDlpRunner {
             }
         });
 
-        // 3) Запуск download. `to_path` пишет точно в `out_dir/source`,
-        //    расширение выберет yt-dlp по доступным форматам.
         let target = out_dir.join(OUTPUT_BASENAME);
         let downloader_clone = (*downloader).clone();
         let download_future = async move {
@@ -165,15 +156,10 @@ impl YtDlpRunner {
                 .map_err(|e| AppError::YtDlp(format!("{e}")))
         };
 
-        // 4) Гонка cancel ↔ download.
-        //
-        //    `Downloader::shutdown()` прерывает ВСЕ текущие загрузки
-        //    в этом Downloader'е. Нам нужен per-job cancel, но в крейте
-        //    `yt-dlp` нет `cancel_download(video_id)` без предварительного
-        //    `download_video_with_priority`, который возвращает download_id.
-        //    Workaround: ставим на job id флаг cancelled, проверяем между
-        //    чанками (если бы были). Сейчас download — одна операция,
-        //    которая не прерывается; ждём её завершения.
+        // Cancel ↔ download: shutdown() прерывает ВСЕ текущие загрузки в этом
+        // Downloader'е. Per-job cancel через API крейте нельзя (нужен
+        // download_video_with_priority и download_id), поэтому сейчас
+        // download ждётся до конца после сигнала отмены.
         let result = tokio::select! {
             r = download_future => r,
             _ = cancel.cancelled() => {
@@ -195,8 +181,8 @@ impl YtDlpRunner {
     }
 }
 
-/// Собрать CLI-args для yt-dlp из нашего `DownloadConfig`.
-/// Возвращаемый вектор передаётся в `Downloader::append_args` ДО `build()`.
+/// CLI-args для yt-dlp из нашего `DownloadConfig`. Передаются
+/// в `Downloader::append_args` ДО `build()`.
 fn build_args(dl: &DownloadConfig) -> Vec<String> {
     let mut args = vec![
         "--no-mtime".to_string(),
@@ -287,8 +273,8 @@ fn forward_event(
         E::DownloadFailed { error, .. } => {
             state.log_line(job_id, format!("yt-dlp: download failed: {error}"));
         }
-        E::FormatSelected { format_id, .. } => {
-            debug!("yt-dlp: format selected = {format_id}");
+        E::FormatSelected { video_id, quality, .. } => {
+            debug!("yt-dlp: format selected (video={video_id}, quality={quality})");
         }
         _ => debug!("yt-dlp event: {:?}", event.event_type()),
     }

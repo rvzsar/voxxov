@@ -10,7 +10,7 @@ const APP_DIR: &str = "GigaAM";
 
 /// Базовая директория приложения. Передавай `Some(&app.handle())` для
 /// продакшн-путей; `None` используется только в dev/тестах.
-fn base(app: Option<&tauri::AppHandle>) -> PathBuf {
+pub(crate) fn base(app: Option<&tauri::AppHandle>) -> PathBuf {
     if let Some(handle) = app {
         if let Ok(d) = handle.path().app_config_dir() {
             return d;

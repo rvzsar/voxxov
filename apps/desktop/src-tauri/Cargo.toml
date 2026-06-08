@@ -36,7 +36,6 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 
 directories = { workspace = true }
-config = { workspace = true }
 
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -51,12 +50,16 @@ hound = { workspace = true }
 # yt-dlp (GPL-3.0)
 yt-dlp = { workspace = true }
 
+# HTTP client для скачивания моделей
+reqwest = { workspace = true }
+
 url = "2"
 
 uuid = { workspace = true }
 chrono = { workspace = true }
 once_cell = { workspace = true }
 parking_lot = { workspace = true }
+sha2 = { workspace = true }
 
 [features]
 # По умолчанию включаем custom-protocol для релизной сборки

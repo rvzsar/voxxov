@@ -6,6 +6,11 @@ Thumbs.db
 *.swp
 *.swo
 
+# --- AI assistants / agent rules (per-developer, not for repo) ---
+.cursor/
+.agents/
+CLAUDE.md
+
 # --- Logs / env ---
 *.log
 .env

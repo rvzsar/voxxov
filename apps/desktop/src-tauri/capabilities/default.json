@@ -13,7 +13,6 @@
     "core:resources:default",
     "core:menu:default",
     "core:tray:default",
-    "shell:default",
     "dialog:default",
     "store:default",
     "opener:default",

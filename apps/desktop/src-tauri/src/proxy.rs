@@ -1,13 +1,12 @@
-//! Конвертация нашего `ProxyConfig` в CLI-аргументы `yt-dlp`.
+//! CLI-args для yt-dlp из `ProxyConfig`.
 //!
-//! Используем `args.push("--proxy", url)` + `args.push("--no-proxy", list)`,
-//! т.к. `DownloaderBuilder::with_proxy` есть в крейте `yt-dlp`, но
-//! чтобы не зависеть от его точной сигнатуры — просто эмулируем через
-//! args. URL percent-encode делает `url::Url` (см. `ProxyConfig::to_ytdlp_arg`).
+//! Используем `--proxy` (а не `DownloaderBuilder::with_proxy`), чтобы
+//! не зависеть от точной сигнатуры крейте `yt-dlp`. URL percent-encoding
+//! делает `url::Url` (см. `ProxyConfig::to_ytdlp_arg`).
 
 use crate::config::{ProxyConfig, ProxyKind};
 
-/// CLI-аргументы, которые нужно прокинуть в `Downloader::append_args`.
+/// Args для `Downloader::append_args`.
 pub fn to_args(cfg: &ProxyConfig) -> Vec<String> {
     let mut args = Vec::new();
 
@@ -21,8 +20,7 @@ pub fn to_args(cfg: &ProxyConfig) -> Vec<String> {
     args
 }
 
-/// Возвращает URL с percent-encoded user/password, или `None` если
-/// прокси не настроен / хост пустой.
+/// URL с percent-encoded user/password, или `None` если прокси не настроен.
 fn proxy_url(cfg: &ProxyConfig) -> Option<String> {
     use url::Url;
 
@@ -43,10 +41,10 @@ fn proxy_url(cfg: &ProxyConfig) -> Option<String> {
     };
 
     let mut url = Url::parse(&format!("{scheme}://{host}:{port}")).ok()?;
-    if let (Some(u), Some(p)) = (&cfg.username, &cfg.password) {
+    if let (Some(u), Some(p)) = (cfg.username.as_deref(), cfg.password.as_deref()) {
         if !u.is_empty() {
             // set_username/set_password сами percent-кодируют.
-            let _ = url.set_username(Some(u));
+            let _ = url.set_username(u);
             let _ = url.set_password(Some(p));
         }
     }
@@ -54,10 +52,7 @@ fn proxy_url(cfg: &ProxyConfig) -> Option<String> {
 }
 
 fn no_proxy_list(_cfg: &ProxyConfig) -> Option<Vec<String>> {
-    // TODO: yt-dlp CLI не имеет `--no-proxy` флага. NO_PROXY env
-    // обрабатывается libcurl/reqwest. Пока — no-op; cfg.no_proxy
-    // применяется на уровне reqwest через крейт `yt-dlp` (если
-    // DownloaderBuilder::with_proxy поддерживает no_proxy list в
-    // будущих версиях).
+    // TODO: yt-dlp CLI не имеет `--no-proxy`; NO_PROXY обрабатывается
+    // libcurl/reqwest. Пока — no-op.
     None
 }

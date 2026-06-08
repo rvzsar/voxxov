@@ -16,9 +16,9 @@ const CHANNEL_CAPACITY: usize = 512;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub jobs: RwLock<HashMap<JobId, Job>>,
-    pub cancel_tokens: RwLock<HashMap<JobId, CancellationToken>>,
-    pub config: RwLock<AppConfig>,
+    pub jobs: Arc<RwLock<HashMap<JobId, Job>>>,
+    pub cancel_tokens: Arc<RwLock<HashMap<JobId, CancellationToken>>>,
+    pub config: Arc<RwLock<AppConfig>>,
     pub events: broadcast::Sender<BackendEvent>,
     pub app: AppHandle,
     /// Lazy-initialized `yt-dlp` downloader. Result-обёртка позволяет
@@ -30,9 +30,9 @@ impl AppState {
     pub fn new(config: AppConfig, app: AppHandle) -> Self {
         let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
         Self {
-            jobs: RwLock::new(HashMap::new()),
-            cancel_tokens: RwLock::new(HashMap::new()),
-            config: RwLock::new(config),
+            jobs: Arc::new(RwLock::new(HashMap::new())),
+            cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
+            config: Arc::new(RwLock::new(config)),
             events: tx,
             app,
             downloader: Arc::new(tokio::sync::OnceCell::new()),
@@ -55,8 +55,7 @@ impl AppState {
             .send(BackendEvent::JobCreated { job: Box::new(job) });
     }
 
-    /// Применить `update` к существующей задаче и разослать событие.
-    /// Если задачи нет — тихо warning (UI просто игнорирует).
+    /// Применить `update` и разослать событие. Нет задачи — warning.
     pub fn update_job(&self, id: &str, update: JobUpdate) {
         let mut jobs = self.jobs.write();
         if let Some(j) = jobs.get_mut(id) {
@@ -70,9 +69,8 @@ impl AppState {
         }
     }
 
-    /// Установить стадию + label. Сохраняет `progress.pct` если оно
-    /// уже > 0, чтобы прогресс-бар не отскакивал назад при смене
-    /// стадии (например, после `set_stage(Transcribing)`).
+    /// Установить стадию + label. Сохраняет `progress.pct > 0`,
+    /// чтобы прогресс-бар не отскакивал назад при смене стадии.
     pub fn set_stage(&self, id: &str, stage: JobStage, label: impl Into<String>) {
         let label = label.into();
         let current_pct = self
@@ -156,8 +154,7 @@ fn apply_update(j: &mut Job, u: &JobUpdate) {
         j.stage = s;
     }
     if let Some(progress) = &u.progress {
-        // Защита от отката: если job уже на pct > 0, и новый pct < старого,
-        // игнорируем (UI-баг — прогресс не должен прыгать назад).
+        // Игнорировать откат pct, если он уже > 0.
         if !(progress.pct < j.progress.pct && j.progress.pct > 0.0) {
             j.progress = progress.clone();
         }

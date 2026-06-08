@@ -12,6 +12,7 @@ mod config;
 mod error;
 mod ffmpeg;
 mod logging;
+mod models;
 mod paths;
 mod pipeline;
 mod proxy;
@@ -29,8 +30,8 @@ use tauri::{Emitter, Manager};
 /// Точка входа, вызывается из `main.rs`.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Инициализируем логгер максимально рано — чтобы ошибки старта
-    // (например, проблемы с конфигом) попали и в файл, и в stderr.
+    // Инициализируем логгер раньше всего — чтобы ошибки старта попали
+    // и в файл, и в stderr.
     let cfg = config::load_or_default();
     logging::init(&cfg.logging);
 
@@ -39,8 +40,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
-            // Структура каталогов создаётся до первого обращения к
-            // jobs/transcripts/etc. — иначе первый запуск падает на записи.
+            // Каталоги создаём до первого обращения — иначе первый
+            // запуск падает на записи.
             if let Err(e) = paths::ensure_all(&app.handle()) {
                 tracing::warn!("paths::ensure_all failed: {e}");
             }
@@ -60,8 +61,7 @@ pub fn run() {
                 }
             });
 
-            // Запускаем forwarder: всё, что летит в `state.events`,
-            // пересылается во frontend под именем `job:event`.
+            // Forwarder: всё, что летит в state.events, эмитим как job:event.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -92,6 +92,8 @@ pub fn run() {
             commands::save_config,
             commands::fetch_metadata,
             commands::diagnose,
+            commands::check_model_status,
+            commands::download_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

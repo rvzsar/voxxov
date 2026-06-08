@@ -103,8 +103,6 @@ function mockConfig(): AppConfig {
     output: {
       dir: "",
       formats: ["txt", "srt", "json"],
-      includeTimestamps: true,
-      filenameTemplate: "%(title).150B [%(id)s]",
     },
     logging: { level: "info", file: true, maxSizeMb: 5, keepFiles: 3 },
   };
