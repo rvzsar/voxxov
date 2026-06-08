@@ -21,7 +21,7 @@
   }
   $effect(() => {
     // Подписка на logs через чтение внутри $effect — при изменении авто-скролл.
-    const _len = logs.length;
+    void logs.length;
     if (logPre && !userScrolled) {
       logPre.scrollTop = logPre.scrollHeight;
     }
@@ -48,10 +48,8 @@
   const previewShort = $derived.by(() => {
     const t = job?.transcriptPreview?.trim() ?? '';
     if (previewExpanded || t.length <= 280) return t;
-    // Безопасное обрезание по границе UTF-8 символа
-    let end = 280;
-    while (end > 0 && !t.isCharBoundary(end)) end -= 1;
-    return t.slice(0, end) + '…';
+    // Обрезание по UTF-16 code point (защита от split внутри surrogate pair).
+    return [...t].slice(0, 280).join('') + '…';
   });
   const canExpand = $derived((job?.transcriptPreview?.trim().length ?? 0) > 280);
 </script>

@@ -112,7 +112,6 @@
       <label>Макс. высота<input type="number" min="0" max="4320" step="1" value={dl.maxHeight} oninput={(e) => updateDl({ maxHeight: Number((e.currentTarget as HTMLInputElement).value) || 0 })} /></label>
       <label>Параллельно<input type="number" min="1" max="16" value={dl.concurrentFragments} oninput={(e) => updateDl({ concurrentFragments: Math.max(1, Math.min(16, Number((e.currentTarget as HTMLInputElement).value) || 1)) })} /></label>
       <label>Повторы<input type="number" min="0" max="10" value={dl.retries} oninput={(e) => updateDl({ retries: Math.max(0, Math.min(10, Number((e.currentTarget as HTMLInputElement).value) || 0)) })} /></label>
-      <label class="full">Имя файла задаётся автоматически из метаданных (yt-dlp сам выбирает)</label>
       <label class="full">Cookies (путь к .txt)<input type="text" value={dl.cookieFile ?? ''} oninput={(e) => updateDl({ cookieFile: (e.currentTarget as HTMLInputElement).value || undefined })} /></label>
       <label class="full">User-Agent (пусто = default)<input type="text" value={dl.userAgent ?? ''} placeholder="Mozilla/5.0 ..." oninput={(e) => updateDl({ userAgent: (e.currentTarget as HTMLInputElement).value || undefined })} /></label>
       <label class="check"><input type="checkbox" checked={dl.audioOnly} onchange={(e) => updateDl({ audioOnly: (e.currentTarget as HTMLInputElement).checked })} />Только аудио</label>
