@@ -3,18 +3,23 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
 
 env:
+  # These are Tauri **updater** signing keys (signs the .sig files
+  # that the in-app updater verifies). They are NOT OS-level code
+  # signing certs (Apple Developer ID, Windows Authenticode, etc.) —
+  # for proper code signing, configure those separately via the
+  # platform's signing tools, not via these env vars.
   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
 jobs:
   build:
-    name: Build (${{ matrix.platform }})
+    name: Build (${{ matrix.platform.label }})
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
@@ -26,7 +31,7 @@ jobs:
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows-x86_64
-          - runner: macos-latest
+          - runner: macos-14
             target: aarch64-apple-darwin
             label: macos-aarch64
           - runner: macos-13
@@ -35,6 +40,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # Diagnostics for macos runners — `macos-latest` is a floating
+      # alias; logging uname keeps surprises visible if it changes.
+      - name: Show host
+        if: startsWith(matrix.platform.runner, 'macos')
+        run: |
+          uname -a
+          uname -m
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: matrix.platform.runner == 'windows-latest'
+        with:
+          arch: x64
 
       - uses: actions/setup-node@v4
         with:
@@ -47,7 +65,7 @@ jobs:
           targets: ${{ matrix.platform.target }}
 
       - name: Rust cache
-        uses: swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
           key: ${{ matrix.platform.label }}
@@ -56,22 +74,32 @@ jobs:
         if: matrix.platform.runner == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            wget \
+            file \
+            pkg-config \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf
 
-      - name: Install frontend dependencies
-        working-directory: apps/desktop
-        run: npm ci
-
+      # tauri.conf.json has `beforeBuildCommand: npm run build`, so
+      # tauri-action triggers it. No need for a separate `npm run build`
+      # step here — that would build the frontend twice.
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_TARGET: ${{ matrix.platform.target }}
         with:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: GigaAM Desktop ${{ github.ref_name }}
-          releaseBody: 'See the assets below for download links.'
+          releaseBody: "See the assets below for download links."
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.platform.target }}
