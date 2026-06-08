@@ -15,14 +15,11 @@ pub struct FfmpegRunner {
 
 impl FfmpegRunner {
     /// Из `custom` пути, иначе — auto-detected из `sidecar::ffmpeg_path`.
-    pub fn resolve(
-        app: &tauri::AppHandle,
-        custom: Option<&str>,
-    ) -> AppResult<Self> {
+    pub fn resolve(custom: Option<&str>) -> AppResult<Self> {
         let bin = if let Some(p) = custom.filter(|s| !s.is_empty()) {
             std::path::PathBuf::from(p)
         } else {
-            sidecar::ffmpeg_path(Some(app))
+            sidecar::ffmpeg_path()
         };
         if !bin.is_file() {
             return Err(AppError::Sidecar(format!("ffmpeg not found at {}", bin.display())));

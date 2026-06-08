@@ -7,7 +7,6 @@ use crate::paths;
 use crate::pipeline;
 use crate::state::AppState;
 use crate::types::{FileInfo, Job, JobId, JobSource, MediaInfo, SidecarStatus};
-use tauri::Manager;
 
 #[tauri::command]
 pub async fn enqueue_url(
@@ -151,28 +150,24 @@ async fn scan_dir_recursive(dir: &std::path::Path, out: &mut Vec<FileInfo>) -> A
 }
 
 #[tauri::command]
-pub fn check_model_status(
-    app: tauri::AppHandle,
-    model_path: Option<String>,
-) -> ModelStatus {
-    let dir = model_path
+pub fn check_model_status(model_dir: Option<String>) -> ModelStatus {
+    let dir = model_dir
         .filter(|s| !s.is_empty())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| models::default_model_dir(&app));
+        .unwrap_or_else(models::default_model_dir);
     models::check_status(&dir)
 }
 
 #[tauri::command]
 pub async fn download_model(
-    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
     job_id: String,
-    model_path: Option<String>,
+    model_dir: Option<String>,
 ) -> AppResult<ModelStatus> {
-    let state = app.state::<AppState>();
-    let dir = model_path
+    let dir = model_dir
         .filter(|s| !s.is_empty())
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| models::default_model_dir(&app));
+        .unwrap_or_else(models::default_model_dir);
     let job_id_for_log = job_id.clone();
     state.log_line(&job_id, "model: starting download");
 
@@ -194,14 +189,11 @@ pub async fn download_model(
 }
 
 #[tauri::command]
-pub fn diagnose(state: tauri::State<'_, AppState>, app: tauri::AppHandle) -> SidecarStatus {
-    let _ = state;
+pub fn diagnose(_state: tauri::State<'_, AppState>) -> SidecarStatus {
     SidecarStatus {
-        ytdlp: Some(crate::sidecar::yt_dlp_path(Some(&app)))
-            .filter(|p| p.is_file()),
-        ffmpeg: Some(crate::sidecar::ffmpeg_path(Some(&app)))
-            .filter(|p| p.is_file()),
-        app_data: paths::config_dir(Some(&app)),
+        ytdlp: Some(crate::sidecar::yt_dlp_path()).filter(|p| p.is_file()),
+        ffmpeg: Some(crate::sidecar::ffmpeg_path()).filter(|p| p.is_file()),
+        app_data: crate::paths::data_root(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }

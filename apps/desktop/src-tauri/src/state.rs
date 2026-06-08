@@ -8,7 +8,6 @@ use crate::types::{BackendEvent, Job, JobId, JobStage, JobUpdate, Progress};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::AppHandle;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
@@ -20,21 +19,19 @@ pub struct AppState {
     pub cancel_tokens: Arc<RwLock<HashMap<JobId, CancellationToken>>>,
     pub config: Arc<RwLock<AppConfig>>,
     pub events: broadcast::Sender<BackendEvent>,
-    pub app: AppHandle,
     /// Lazy-initialized `yt-dlp` downloader. Result-обёртка позволяет
     /// пробрасывать init-ошибки вызывающим (OnceCell.set не умеет Result).
     pub downloader: Arc<tokio::sync::OnceCell<Result<Arc<yt_dlp::Downloader>, String>>>,
 }
 
 impl AppState {
-    pub fn new(config: AppConfig, app: AppHandle) -> Self {
+    pub fn new(config: AppConfig) -> Self {
         let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
         Self {
             jobs: Arc::new(RwLock::new(HashMap::new())),
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(RwLock::new(config)),
             events: tx,
-            app,
             downloader: Arc::new(tokio::sync::OnceCell::new()),
         }
     }

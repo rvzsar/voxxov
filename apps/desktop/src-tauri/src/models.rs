@@ -237,9 +237,9 @@ async fn download_file(url: &str, target: &Path) -> AppResult<()> {
     Ok(())
 }
 
-/// Дефолтная директория для моделей: `$APPDATA/GigaAM/models`.
-pub fn default_model_dir(app: &tauri::AppHandle) -> PathBuf {
-    crate::paths::base(Some(app)).join("models")
+/// Дефолтная директория для моделей: `<data_root>/models` (рядом с .exe).
+pub fn default_model_dir() -> PathBuf {
+    crate::paths::model_dir()
 }
 
 /// Streaming SHA256, чтобы не грузить encoder (~319 MB) в память.

@@ -50,6 +50,10 @@ models/*.nemo
 release/
 dist-artifacts/
 
+# --- Downloaded CI artifacts (not part of repo) ---
+gigaam-desktop-*.zip
+*.zip.asc
+
 # --- Local data ---
 *.sqlite
 *.sqlite-journal

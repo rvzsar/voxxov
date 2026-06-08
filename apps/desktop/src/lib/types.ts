@@ -72,7 +72,10 @@ export type DownloadConfig = {
 export type AsrDevice = "cpu" | "cuda" | "directml" | "openvino";
 
 export type AsrConfig = {
-  modelPath: string;
+  /** Folder containing the 4 GigaAM files (encoder/decoder/joiner.onnx
+   *  + tokens.txt). Empty = auto-download to <exe_dir>/models.
+   *  "cmd:some-cli --args" = delegate to an external CLI. */
+  modelDir: string;
   sampleRate: number;
   language: string;
   device: AsrDevice;
@@ -120,7 +123,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     overwrite: false,
   },
   asr: {
-    modelPath: "",
+    modelDir: "",
     sampleRate: 16000,
     language: "ru",
     device: "cpu",

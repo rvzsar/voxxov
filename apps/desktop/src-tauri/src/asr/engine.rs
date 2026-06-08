@@ -26,7 +26,7 @@ pub async fn transcribe(
     state: &AppState,
     job_id: &str,
     audio: &Path,
-    model_path: &str,
+    model_dir: &str,
     cfg: &AsrConfig,
     cancel: CancellationToken,
 ) -> AppResult<Transcription> {
@@ -36,19 +36,19 @@ pub async fn transcribe(
             audio.display()
         )));
     }
-    if model_path.is_empty() {
-        return Err(AppError::Asr("model_path is empty".into()));
+    if model_dir.is_empty() {
+        return Err(AppError::Asr("model_dir is empty".into()));
     }
 
-    state.log_line(job_id, format!("ASR: loading model from {model_path}"));
+    state.log_line(job_id, format!("ASR: loading model from {model_dir}"));
 
     // cmd: prefix — fallback to external CLI.
-    if let Some(cmd) = cfg.model_path.strip_prefix("cmd:") {
+    if let Some(cmd) = cfg.model_dir.strip_prefix("cmd:") {
         return super::cmd_fallback::transcribe_cmd(state, job_id, audio, cmd).await;
     }
 
     // Discover model files.
-    let (encoder, decoder, joiner, tokens) = discover_model_files(model_path)?;
+    let (encoder, decoder, joiner, tokens) = discover_model_files(model_dir)?;
     state.log_line(
         job_id,
         format!(
@@ -123,7 +123,6 @@ pub async fn transcribe(
     .map_err(|e| AppError::Asr(format!("recognizer join: {e}")))??;
     let engine = Arc::new(engine);
     let total = segments.len();
-    let chunk_dur = samples.samples.len() as f32 / samples.sample_rate as f32;
 
     let mut texts: Vec<String> = Vec::with_capacity(total);
     let mut timed: Vec<super::TimedSegment> = Vec::new();
@@ -181,15 +180,15 @@ pub async fn transcribe(
 
 // --- helpers ---
 
-/// Найти encoder/decoder/joiner/tokens в `model_path` (должна быть директорией).
+/// Найти encoder/decoder/joiner/tokens в `model_dir` (должна быть директорией).
 pub fn discover_model_files(
-    model_path: &str,
+    model_dir: &str,
 ) -> AppResult<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)>
 {
-    let dir = std::path::Path::new(model_path);
+    let dir = std::path::Path::new(model_dir);
     if !dir.is_dir() {
         return Err(AppError::Asr(format!(
-            "model_path is not a directory: {}",
+            "model_dir is not a directory: {}",
             dir.display()
         )));
     }

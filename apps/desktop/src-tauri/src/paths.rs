@@ -1,64 +1,120 @@
-//! Пути приложения: конфиг, логи, кэш, downloads, transcripts.
+//! All app paths are next to the .exe (truly portable).
 //!
-//! Все пути берутся из Tauri `app_config_dir()` (по `identifier` в
-//! `tauri.conf.json`). Fallback для dev/тестов — `directories`-крейт.
+//! Layout relative to the .exe:
+//!
+//! ```text
+//! gigaam-desktop.exe
+//! ├── data/                  ← mutable state
+//! │   ├── config.toml
+//! │   ├── logs/app.log
+//! │   ├── cache/
+//! │   ├── downloads/         ← yt-dlp temp outputs
+//! │   ├── jobs/<job_id>/
+//! │   └── transcripts/<title>.{txt,srt,json}
+//! ├── models/                ← ASR model files (auto-discovered)
+//! └── bin/                   ← yt-dlp.exe, ffmpeg.exe (auto-downloaded)
+//! ```
+//!
+//! Override via env var `GIGAAM_DATA_DIR` if you need the data somewhere
+//! else (RAM disk, different drive). No fallback to `%APPDATA%` — if the
+//! .exe lives in a read-only location, `init_data_root` panics with a
+//! clear error message at startup.
 
 use std::path::PathBuf;
-use tauri::Manager;
+use std::sync::OnceLock;
 
-const APP_DIR: &str = "GigaAM";
+const DATA_SUBDIR: &str = "data";
+const MODELS_SUBDIR: &str = "models";
+const BIN_SUBDIR: &str = "bin";
 
-/// Базовая директория приложения. Передавай `Some(&app.handle())` для
-/// продакшн-путей; `None` используется только в dev/тестах.
-pub(crate) fn base(app: Option<&tauri::AppHandle>) -> PathBuf {
-    if let Some(handle) = app {
-        if let Ok(d) = handle.path().app_config_dir() {
-            return d;
-        }
+static DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Initialize the data root. Must be called exactly once at startup
+/// (in `lib.rs::run`) before any other paths function. Panics if the
+/// directory cannot be determined or created.
+pub fn init_data_root() {
+    let _ = DATA_ROOT.set(resolve_data_root());
+}
+
+fn resolve_data_root() -> PathBuf {
+    let root = std::env::var_os("GIGAAM_DATA_DIR")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        })
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    if let Err(e) = std::fs::create_dir_all(&root) {
+        panic!(
+            "GigaAM: cannot create data root {}: {e}. \
+             Move the .exe to a writable folder, or set GIGAAM_DATA_DIR.",
+            root.display()
+        );
     }
-    directories::ProjectDirs::from("dev", "salute", APP_DIR)
-        .map(|p| p.config_dir().to_path_buf())
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default().join(".gigaam"))
+    root
 }
 
-pub fn config_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
-    base(app)
+/// Override the data root (for tests only). Must be called before any
+/// other paths function.
+#[cfg(test)]
+pub fn set_data_root_for_test(path: PathBuf) {
+    let _ = DATA_ROOT.set(path);
 }
 
-pub fn logs_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
-    base(app).join("logs")
+pub fn data_root() -> PathBuf {
+    DATA_ROOT
+        .get()
+        .cloned()
+        .expect("paths::init_data_root() must be called before any paths function")
 }
 
-pub fn cache_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
-    base(app).join("cache")
+fn data() -> PathBuf {
+    data_root().join(DATA_SUBDIR)
 }
 
-pub fn downloads_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
-    base(app).join("downloads")
+pub fn config_path() -> PathBuf {
+    data().join("config.toml")
+}
+pub fn logs_dir() -> PathBuf {
+    data().join("logs")
+}
+pub fn cache_dir() -> PathBuf {
+    data().join("cache")
+}
+pub fn downloads_dir() -> PathBuf {
+    data().join("downloads")
+}
+pub fn transcripts_dir() -> PathBuf {
+    data().join("transcripts")
+}
+pub fn jobs_dir() -> PathBuf {
+    data().join("jobs")
+}
+pub fn model_dir() -> PathBuf {
+    data_root().join(MODELS_SUBDIR)
+}
+pub fn bin_dir() -> PathBuf {
+    data_root().join(BIN_SUBDIR)
 }
 
-pub fn transcripts_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
-    base(app).join("transcripts")
+pub fn job_workdir(job_id: &str) -> PathBuf {
+    jobs_dir().join(job_id)
 }
 
-pub fn jobs_dir(app: Option<&tauri::AppHandle>) -> PathBuf {
-    base(app).join("jobs")
-}
-
-pub fn ensure_all(app: &tauri::AppHandle) -> std::io::Result<()> {
+pub fn ensure_all() -> std::io::Result<()> {
     for d in [
-        config_dir(Some(app)),
-        logs_dir(Some(app)),
-        cache_dir(Some(app)),
-        downloads_dir(Some(app)),
-        transcripts_dir(Some(app)),
-        jobs_dir(Some(app)),
+        data(),
+        logs_dir(),
+        cache_dir(),
+        downloads_dir(),
+        transcripts_dir(),
+        jobs_dir(),
+        model_dir(),
+        bin_dir(),
     ] {
         std::fs::create_dir_all(d)?;
     }
     Ok(())
-}
-
-pub fn job_workdir(app: &tauri::AppHandle, job_id: &str) -> PathBuf {
-    jobs_dir(Some(app)).join(job_id)
 }

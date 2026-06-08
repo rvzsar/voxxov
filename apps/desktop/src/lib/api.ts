@@ -92,7 +92,7 @@ function mockConfig(): AppConfig {
       overwrite: false,
     },
     asr: {
-      modelPath: "",
+      modelDir: "",
       sampleRate: 16000,
       language: "ru",
       device: "cpu",

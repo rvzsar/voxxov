@@ -32,17 +32,17 @@ pub struct YtDlpRunner;
 
 impl YtDlpRunner {
     /// Получить downloader из `AppState`, инициализируя при первом вызове.
-    /// Крейт `yt-dlp` при init скачает yt-dlp+ffmpeg в `$APPDATA/GigaAM/bin/`.
+    /// Крейт `yt-dlp` при init скачает yt-dlp+ffmpeg в `<data_root>/bin/`.
     pub async fn get(state: &AppState) -> AppResult<Arc<Downloader>> {
         let cfg = state.config();
-        let bin_dir = crate::sidecar::bin_dir(Some(&state.app));
+        let bin_dir = crate::sidecar::bin_dir();
         std::fs::create_dir_all(&bin_dir).map_err(|e| {
             AppError::Other(format!("create bin dir {}: {e}", bin_dir.display()))
         })?;
 
         let libraries = Libraries::new(
-            crate::sidecar::yt_dlp_path(Some(&state.app)),
-            crate::sidecar::ffmpeg_path(Some(&state.app)),
+            crate::sidecar::yt_dlp_path(),
+            crate::sidecar::ffmpeg_path(),
         );
 
         // OnceCell.get_or_init не возвращает Result из init — храним

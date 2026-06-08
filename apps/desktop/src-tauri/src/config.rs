@@ -3,7 +3,7 @@
 
 use crate::paths;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -70,7 +70,11 @@ impl Default for DownloadConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AsrConfig {
-    pub model_path: String,
+    /// Folder containing the 4 GigaAM files (encoder/decoder/joiner.onnx
+    /// + tokens.txt). Empty = auto-download to `<data_root>/models`.
+    /// `cmd:some-cli --args` = delegate to an external CLI (escape hatch).
+    #[serde(alias = "modelPath", alias = "model_path")]
+    pub model_dir: String,
     pub sample_rate: u32,
     pub language: String,
     pub device: AsrDevice,
@@ -82,7 +86,7 @@ pub struct AsrConfig {
 impl Default for AsrConfig {
     fn default() -> Self {
         Self {
-            model_path: String::new(),
+            model_dir: String::new(),
             sample_rate: 16000,
             language: "ru".to_string(),
             device: AsrDevice::Cpu,
@@ -150,12 +154,8 @@ pub struct AppConfig {
 
 // ---------------- file IO ----------------
 
-pub fn config_path() -> PathBuf {
-    paths::config_dir(None).join("config.toml")
-}
-
 pub fn load_or_default() -> AppConfig {
-    let path = config_path();
+    let path = crate::paths::config_path();
     load_from(&path).unwrap_or_default()
 }
 
@@ -171,7 +171,7 @@ pub fn load_from(path: &Path) -> Option<AppConfig> {
 }
 
 pub fn save(cfg: &AppConfig) -> crate::error::AppResult<()> {
-    let path = config_path();
+    let path = crate::paths::config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

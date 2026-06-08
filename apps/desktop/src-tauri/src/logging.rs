@@ -16,7 +16,7 @@ pub fn init(cfg: &LoggingConfig) {
         .with_ansi(true);
 
     let file_layer = if cfg.file {
-        let path = crate::paths::logs_dir(None).join("app.log");
+        let path = crate::paths::logs_dir().join("app.log");
         let _ = std::fs::create_dir_all(path.parent().unwrap());
         let file = OpenOptions::new()
             .create(true)

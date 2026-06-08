@@ -1,6 +1,7 @@
 <script lang="ts">
   import { settingsStore } from '../stores/settings.svelte';
   import { toast } from '../stores/toast.svelte';
+  import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import type { AsrDevice, ProxyKind } from '../types';
 
   const c = $derived(settingsStore.config);
@@ -73,6 +74,21 @@
     settingsStore.reset();
     toast.info('Сброшено (не забудьте Сохранить)');
   }
+
+  async function pickModelDir() {
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: 'Выберите папку с моделью GigaAM',
+      });
+      if (typeof picked === 'string' && picked.length > 0) {
+        updateAsr({ modelDir: picked });
+      }
+    } catch (e) {
+      toast.error(`Не удалось открыть диалог: ${(e as Error).message}`);
+    }
+  }
 </script>
 
 <div class="settings">
@@ -123,7 +139,12 @@
   <section>
     <h3>ASR (GigaAM-V3)</h3>
     <div class="grid">
-      <label class="full">Путь к модели<input type="text" value={asr.modelPath} placeholder="/path/to/models или cmd:gigaam-cli --foo (пусто = авто)" oninput={(e) => updateAsr({ modelPath: (e.currentTarget as HTMLInputElement).value })} /></label>
+      <label class="full">Папка модели (пусто = <code>&lt;exe_dir&gt;/models</code>, авто-скачивание)
+        <div class="row">
+          <input type="text" value={asr.modelDir} placeholder="C:\models\gigaam-v3  или  cmd:gigaam-cli --foo" oninput={(e) => updateAsr({ modelDir: (e.currentTarget as HTMLInputElement).value })} />
+          <button type="button" class="btn" onclick={pickModelDir}>Обзор…</button>
+        </div>
+      </label>
       <label>Частота (Гц)<input type="number" min="8000" max="48000" step="1000" value={asr.sampleRate} oninput={(e) => updateAsr({ sampleRate: Math.max(8000, Math.min(48000, Number((e.currentTarget as HTMLInputElement).value) || 16000)) })} /></label>
       <label>Язык<input type="text" value={asr.language} oninput={(e) => updateAsr({ language: (e.currentTarget as HTMLInputElement).value })} /></label>
       <label>Устройство
@@ -175,6 +196,8 @@
   label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
   label.full { grid-column: 1 / -1; }
   label.check { flex-direction: row; align-items: center; gap: 4px; cursor: pointer; }
+  .row { display: flex; gap: 4px; }
+  .row input { flex: 1; }
   .actions { display: flex; gap: 4px; }
   .btn {
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px;

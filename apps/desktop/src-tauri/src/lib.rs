@@ -30,8 +30,19 @@ use tauri::{Emitter, Manager};
 /// Точка входа, вызывается из `main.rs`.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Инициализируем логгер раньше всего — чтобы ошибки старта попали
-    // и в файл, и в stderr.
+    // Инициализируем data_root раньше всего — пути нужны и для чтения
+    // конфига, и для файла лога. Если .exe в read-only месте — паникуем
+    // сразу с понятным сообщением (GIGAAM_DATA_DIR как escape hatch).
+    crate::paths::init_data_root();
+
+    // Каталоги создаём до первого обращения — иначе первый запуск
+    // падает на записи.
+    if let Err(e) = crate::paths::ensure_all() {
+        tracing::warn!("paths::ensure_all failed: {e}");
+    }
+
+    // Инициализируем логгер после data_root — файл лога пишется в
+    // <data_root>/data/logs/app.log.
     let cfg = config::load_or_default();
     logging::init(&cfg.logging);
 
@@ -40,13 +51,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
-            // Каталоги создаём до первого обращения — иначе первый
-            // запуск падает на записи.
-            if let Err(e) = paths::ensure_all(&app.handle()) {
-                tracing::warn!("paths::ensure_all failed: {e}");
-            }
-
-            let state = AppState::new(cfg.clone(), app.handle().clone());
+            let state = AppState::new(cfg.clone());
             let state_for_init = state.clone();
 
             // Eager init yt-dlp в фоне. При первом `enqueue_url` он уже

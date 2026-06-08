@@ -28,7 +28,11 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/transcripts/**", "$APPDATA/jobs/**"]
+        "scope": [
+          "$RESOURCE/data/transcripts/**",
+          "$RESOURCE/data/jobs/**",
+          "$RESOURCE/models/**"
+        ]
       }
     }
   },

@@ -33,34 +33,63 @@
 └── .github/workflows/      # CI/CD
 ```
 
-## Быстрый старт
+## Структура (portable)
 
-1. Запустить dev-режим (yt-dlp + ffmpeg скачаются автоматически при
-   первой задаче в `$APPDATA/GigaAM/bin/`):
+Все мутабельные данные лежат **рядом с .exe**. Можно копировать всю папку
+на USB, запускать с любого диска, не оставлять следов в системе.
+
+```
+GigaAM Desktop/                ← можно назвать как угодно
+├── gigaam-desktop.exe
+├── data/
+│   ├── config.toml
+│   ├── logs/app.log
+│   ├── cache/
+│   ├── downloads/              ← временные скачивания yt-dlp
+│   ├── jobs/<job_id>/          ← промежуточные WAV
+│   └── transcripts/<title>.{txt,srt,json}
+├── models/                     ← сюда скачаются 4 файла GigaAM при первом запуске
+│   ├── gigaam_v3_e2e_rnnt_encoder_int8.onnx
+│   ├── gigaam_v3_e2e_rnnt_decoder.onnx
+│   ├── gigaam_v3_e2e_rnnt_joint.onnx
+│   └── gigaam_v3_e2e_rnnt_tokens.txt
+└── bin/                        ← yt-dlp + ffmpeg (тоже авто-скачивание)
+    ├── yt-dlp.exe
+    └── ffmpeg.exe
+```
+
+**Override через env var** `GIGAAM_DATA_DIR=...` — если хочется вынести
+данные на RAM-диск или на другой диск (но оставить .exe на месте).
+
+**Если .exe в read-only месте** (например, `C:\Program Files\`) — приложение
+упадёт при старте с понятной ошибкой. Решения: перенести .exe в
+пишущуюся папку, или задать `GIGAAM_DATA_DIR`.
+
+## Quick Start
+
+1. Запустить dev-режим (yt-dlp + ffmpeg + модель GigaAM скачаются
+   автоматически при первом запуске — в `<exe_dir>/bin/` и
+   `<exe_dir>/models/` соответственно):
 
     ```cmd
     scripts\dev.cmd
     ```
 
-2. Скачать ONNX-модель GigaAM v3 и токенизатор, указать пути в `Settings` UI
-   (или в `%APPDATA%/GigaAM/config.toml`).
+2. Запустить распознавание. Папку с моделью можно указать в `Settings → ASR`
+   (пусто = авто-скачивание в `<exe_dir>/models`).
 
 ## Sidecars
 
 yt-dlp и ffmpeg **не поставляются в бинарь** приложения и не требуют
 ручной установки. Крейт `yt-dlp` (GPL-3.0) скачивает их сам при первом
-использовании и кладёт в:
-
-- **Windows**: `%APPDATA%\com.gigaam.desktop\bin\`
-- **Linux**: `~/.local/share/com.gigaam.desktop/bin/`
-- **macOS**: `~/Library/Application Support/com.gigaam.desktop/bin/`
+использовании и кладёт в `<exe_dir>/bin/`.
 
 Если нужно указать другой путь (например, системный yt-dlp) — создайте
 `bin/yt-dlp[.exe]` и `bin/ffmpeg[.exe]` в нужной директории до запуска.
 
 ## Конфигурация
 
-Файл: `%APPDATA%\GigaAM\config.toml` (Windows), `~/.config/GigaAM/...` (Linux).
+Файл: `<exe_dir>/data/config.toml` (рядом с .exe, см. «Структура» выше).
 
 ```toml
 [proxy]
@@ -76,12 +105,14 @@ custom_ytdlp_path = "" # пусто → автодетект
 custom_ffmpeg_path = ""
 
 [asr]
-model_path = ""        # путь к ONNX/модели или "cmd:my-cli --flag"
+# Пусто = авто-скачивание в <exe_dir>/models. Иначе — путь к папке с
+# 4 файлами: encoder/decoder/joiner.onnx + tokens.txt.
+model_dir = ""
 sample_rate = 16000
 language = "ru"
 
 [output]
-dir = ""               # пусто → ~/.../transcripts
+dir = ""               # пусто → <exe_dir>/data/transcripts
 formats = ["txt", "srt", "json"]
 
 [logging]

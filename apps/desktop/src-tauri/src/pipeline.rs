@@ -10,15 +10,14 @@ use crate::state::AppState;
 use crate::types::{Job, JobSource, JobStage, JobUpdate, MediaInfo, Progress};
 use chrono::Utc;
 use std::path::PathBuf;
-use tauri::Manager;
 
 async fn ensure_asr_model(state: &AppState, job_id: &str) -> AppResult<PathBuf> {
     // User-configured path имеет приоритет.
-    let user_path = state.config().asr.model_path.clone();
-    if !user_path.is_empty() {
-        return Ok(PathBuf::from(user_path));
+    let user_dir = state.config().asr.model_dir.clone();
+    if !user_dir.is_empty() {
+        return Ok(PathBuf::from(user_dir));
     }
-    let dir = models::default_model_dir(&state.app);
+    let dir = models::default_model_dir();
     let status = models::check_status(&dir);
     if status.missing.is_empty() {
         return Ok(dir);
@@ -114,15 +113,9 @@ async fn run_inner(
     job: &Job,
     token: tokio_util::sync::CancellationToken,
 ) -> AppResult<(PathBuf, String)> {
-    let ffmpeg = FfmpegRunner::resolve(&state.app, None)?;
+    let ffmpeg = FfmpegRunner::resolve(None)?;
 
-    let workdir = state
-        .app
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|d| d.join("jobs").join(&job.id))
-        .unwrap_or_else(|| paths::jobs_dir(None).join(&job.id));
+    let workdir = paths::job_workdir(&job.id);
     std::fs::create_dir_all(&workdir)?;
 
     // 1-2) Metadata + source file (URL → yt-dlp, local → direct).
@@ -220,13 +213,7 @@ async fn run_inner(
     let segments = transcription.segments;
 
     // 5) Write outputs (txt/srt/json).
-    let out_dir = state
-        .app
-        .path()
-        .app_data_dir()
-        .ok()
-        .map(|d| d.join("transcripts"))
-        .unwrap_or_else(|| paths::transcripts_dir(None));
+    let out_dir = paths::transcripts_dir();
     std::fs::create_dir_all(&out_dir)?;
     let stem = if media.title.is_empty() {
         media.id.clone()
