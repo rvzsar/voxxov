@@ -6,8 +6,26 @@ on:
   pull_request:
 
 jobs:
+  check-types:
+    name: Frontend type-check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install + svelte-check
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run check
+
   build-linux:
-    name: Build (linux-x86_64)
+    name: Build (linux-x86_64, debug)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +38,7 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
-      - name: Linux system deps
+      - name: Linux system deps (webkit/gtk)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -30,44 +48,56 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Install frontend deps
+      - name: Install frontend deps + build
         working-directory: apps/desktop
-        run: npm ci
-
-      - name: Build frontend (vite)
-        working-directory: apps/desktop
-        run: npm run build
-
-      - name: Rust check
-        working-directory: apps/desktop/src-tauri
-        run: cargo check
-
-      - name: Rust build
-        working-directory: apps/desktop/src-tauri
-        run: cargo build
-
-      - name: List build outputs
-        working-directory: apps/desktop/src-tauri
         run: |
-          echo '=== Binary ==='
-          ls -la target/debug/gigaam-desktop* target/debug/*.so 2>/dev/null | head -20
-          echo '=== Frontend dist ==='
-          ls -la ../dist/ 2>&1 | head -20
+          npm ci
+          npm run build
 
-      - name: Upload artifacts (linux debug)
-        uses: actions/upload-artifact@v4
+      - name: Build Tauri bundle (debug)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: gigaam-desktop-linux-debug
-          path: |
-            apps/desktop/src-tauri/target/debug/gigaam-desktop
-            apps/desktop/src-tauri/target/debug/gigaam-desktop.exe
-            apps/desktop/src-tauri/target/debug/*.so
-            apps/desktop/dist/
-          retention-days: 14
-          if-no-files-found: warn
+          projectPath: apps/desktop
+          args: --debug
 
-  check-windows-msvc:
-    name: Check (windows-msvc)
+  build-macos:
+    name: Build (macos-aarch64, debug)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Install frontend deps + build
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build Tauri bundle (debug)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          args: --debug --target aarch64-apple-darwin
+
+  build-windows:
+    name: Build (windows-msvc, debug)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -90,84 +120,16 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri
 
-      - name: Install frontend deps
-        working-directory: apps/desktop
-        run: npm ci
-
-      - name: Build frontend (vite)
-        working-directory: apps/desktop
-        run: npm run build
-
-      - name: Rust check
-        working-directory: apps/desktop/src-tauri
-        run: cargo check
-
-  check-types:
-    name: Frontend type-check
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-
-      - name: Install + svelte-check
+      - name: Install frontend deps + build
         working-directory: apps/desktop
         run: |
           npm ci
-          npm run check
+          npm run build
 
-  build-macos:
-    name: Build (macos-aarch64)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Tauri bundle (debug)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          targets: aarch64-apple-darwin
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: apps/desktop/src-tauri
-
-      - name: Install frontend deps
-        working-directory: apps/desktop
-        run: npm ci
-
-      - name: Build frontend (vite)
-        working-directory: apps/desktop
-        run: npm run build
-
-      - name: Rust check
-        working-directory: apps/desktop/src-tauri
-        run: cargo check
-
-      - name: Rust build
-        working-directory: apps/desktop/src-tauri
-        run: cargo build
-
-      - name: List build outputs
-        working-directory: apps/desktop/src-tauri
-        run: |
-          echo '=== Binary ==='
-          ls -la target/debug/gigaam-desktop* 2>&1 | head -20
-
-      - name: Upload artifacts (macos aarch64 debug)
-        uses: actions/upload-artifact@v4
-        with:
-          name: gigaam-desktop-macos-aarch64-debug
-          path: |
-            apps/desktop/src-tauri/target/debug/gigaam-desktop
-            apps/desktop/dist/
-          retention-days: 14
-          if-no-files-found: warn
+          projectPath: apps/desktop
+          args: --debug
