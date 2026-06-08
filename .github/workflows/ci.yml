@@ -28,18 +28,7 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf \
-            imagemagick
-
-      - name: Normalize icons to RGBA (Tauri 2.x requirement)
-        working-directory: apps/desktop/src-tauri/icons
-        run: |
-          # Tauri 2.x's generate_context!() macro validates icons in
-          # tauri.conf.json and rejects PNG without an alpha channel.
-          # Source icons are RGB; convert in-place to RGBA before Rust build.
-          mogrify -define png:color-type=6 -format png *.png
-          # Regenerate .ico from the largest (256x256) PNG with alpha.
-          convert 128x128@2x.png -define png:color-type=6 icon.ico
+            patchelf
 
       - name: Install frontend deps
         working-directory: apps/desktop
@@ -80,37 +69,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri
-
-      - name: Normalize icons to RGBA (Tauri 2.x requirement)
-        shell: pwsh
-        run: |
-          # On Windows runners we don't have ImageMagick. Use .NET's
-          # System.Drawing via PowerShell to add an alpha channel.
-          Add-Type -AssemblyName System.Drawing
-          Get-ChildItem "apps\desktop\src-tauri\icons\*.png" | ForEach-Object {
-              $img = [System.Drawing.Image]::FromFile($_.FullName)
-              $bmp = New-Object System.Drawing.Bitmap $img.Width, $img.Height,
-                  [System.Drawing.Imaging.PixelFormat]::Format32bppArgb
-              $g = [System.Drawing.Graphics]::FromImage($bmp)
-              $g.DrawImage($img, 0, 0)
-              $g.Dispose()
-              $img.Dispose()
-              $bmp.Save($_.FullName, [System.Drawing.Imaging.ImageFormat]::Png)
-              $bmp.Dispose()
-          }
-          # Regenerate .ico from the largest PNG.
-          $src = "apps\desktop\src-tauri\icons\128x128@2x.png"
-          $dst = "apps\desktop\src-tauri\icons\icon.ico"
-          $bmp = [System.Drawing.Image]::FromFile((Resolve-Path $src))
-          # Save .ico via Icon.ExtractAssociatedIcon is awkward; simplest
-          # is to ship the 128x128 PNG inside the .ico container. Tauri's
-          # bundler accepts both formats.
-          $icon = [System.Drawing.Icon]::FromHandle(((New-Object System.Drawing.Bitmap $bmp)).GetHicon())
-          $fs = [System.IO.File]::Create($dst)
-          $icon.Save($fs)
-          $fs.Close()
-          $icon.Dispose()
-          $bmp.Dispose()
 
       - name: Install frontend deps
         working-directory: apps/desktop
