@@ -8,18 +8,9 @@ on:
 permissions:
   contents: write
 
-env:
-  # These are Tauri **updater** signing keys (signs the .sig files
-  # that the in-app updater verifies). They are NOT OS-level code
-  # signing certs (Apple Developer ID, Windows Authenticode, etc.) —
-  # for proper code signing, configure those separately via the
-  # platform's signing tools, not via these env vars.
-  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
 jobs:
   build:
-    name: Build (windows-x86_64)
+    name: Build (windows-x86_64, portable)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,21 +39,31 @@ jobs:
           workspaces: apps/desktop/src-tauri
           key: windows-x86_64-msvc
 
-      # tauri.conf.json sets `beforeBuildCommand: npm run build`, which
-      # tauri-action runs automatically. `npm ci` above must run first to
-      # populate node_modules.
-      - name: Build Tauri app
+      # `--no-bundle` → single portable .exe (no NSIS/MSI installer).
+      # `+crt-static` from .cargo/config.toml → no VC++ Redist needed.
+      # No tagName here: tauri-action only builds; softprops below
+      # creates the release and attaches the .exe.
+      - name: Build portable .exe
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: GigaAM Desktop ${{ github.ref_name }}
-          releaseBody: "See the assets below for download links."
-          releaseDraft: true
+          args: --target x86_64-pc-windows-msvc --no-bundle
+
+      - name: Create release and upload .exe
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: GigaAM Desktop ${{ github.ref_name }}
+          body: |
+            Portable Windows build.
+
+            - Single .exe, no installer
+            - Requires WebView2 Runtime (preinstalled on Windows 11; on
+              Windows 10 install from https://developer.microsoft.com/microsoft-edge/webview2/)
+            - No Visual C++ Redistributable required
+          draft: true
           prerelease: false
-          # Default `targets: "all"` from tauri.conf.json gives us both
-          # NSIS and MSI installers. Static CRT (from .cargo/config.toml)
-          # means the .exe doesn't need VC++ Redistributable.
-          args: --target x86_64-pc-windows-msvc
+          files: target/x86_64-pc-windows-msvc/release/gigaam-desktop.exe
+          fail_on_unmatched_files: true
