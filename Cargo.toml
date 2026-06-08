@@ -30,7 +30,7 @@ serde_json = "1"
 toml = "0.8"
 
 # Config & paths
-directories = "5"
+# (data-root resolved via std::env::current_exe() — no third-party path crate)
 
 # Errors & logging
 anyhow = "1"
