@@ -82,11 +82,8 @@ pub fn save_config(
 }
 
 #[tauri::command]
-pub async fn fetch_metadata(
-    state: tauri::State<'_, AppState>,
-    url: String,
-) -> AppResult<MediaInfo> {
-    crate::ytdlp::YtDlpRunner::fetch_metadata(&state, &url).await
+pub async fn fetch_metadata(url: String) -> AppResult<MediaInfo> {
+    crate::ytdlp::YtDlpRunner::fetch_metadata(&url).await
 }
 
 const MEDIA_EXTENSIONS: &[&str] = &[

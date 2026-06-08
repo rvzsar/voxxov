@@ -19,9 +19,6 @@ pub struct AppState {
     pub cancel_tokens: Arc<RwLock<HashMap<JobId, CancellationToken>>>,
     pub config: Arc<RwLock<AppConfig>>,
     pub events: broadcast::Sender<BackendEvent>,
-    /// Lazy-initialized `yt-dlp` downloader. Result-обёртка позволяет
-    /// пробрасывать init-ошибки вызывающим (OnceCell.set не умеет Result).
-    pub downloader: Arc<tokio::sync::OnceCell<Result<Arc<yt_dlp::Downloader>, String>>>,
 }
 
 impl AppState {
@@ -32,7 +29,6 @@ impl AppState {
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(RwLock::new(config)),
             events: tx,
-            downloader: Arc::new(tokio::sync::OnceCell::new()),
         }
     }
 

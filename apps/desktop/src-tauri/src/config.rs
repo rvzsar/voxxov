@@ -1,7 +1,7 @@
 //! Конфиг приложения: TOML-файл в `directories::ProjectConfig`,
 //! под-структуры сериализуются в camelCase, чтобы соответствовать TS.
+//! Конфиг приложения: TOML-файл в `<data_root>/data/config.toml`.
 
-use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

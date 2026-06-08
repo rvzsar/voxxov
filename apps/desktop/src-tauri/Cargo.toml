@@ -42,13 +42,11 @@ tracing-subscriber = { workspace = true }
 sherpa-onnx = { workspace = true }
 hound = { workspace = true }
 
-# yt-dlp (GPL-3.0)
-yt-dlp = { workspace = true }
-
-# HTTP client для скачивания моделей
+# HTTP client (для скачивания моделей + yt-dlp/ffmpeg auto-install)
 reqwest = { workspace = true }
 
-url = "2"
+# zip extraction (для ffmpeg auto-download)
+zip = { workspace = true }
 
 uuid = { workspace = true }
 chrono = { workspace = true }

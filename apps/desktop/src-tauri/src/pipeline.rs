@@ -150,7 +150,7 @@ async fn run_inner(
         (media, path)
     } else {
         state.set_stage(&job.id, JobStage::FetchingMetadata, "Получаем метаданные…");
-        let media = crate::ytdlp::YtDlpRunner::fetch_metadata(&state, &job.url).await?;
+        let media = crate::ytdlp::YtDlpRunner::fetch_metadata(&job.url).await?;
         state.update_job(
             &job.id,
             JobUpdate {

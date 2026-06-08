@@ -22,7 +22,7 @@ pub fn to_args(cfg: &ProxyConfig) -> Vec<String> {
 
 /// URL с percent-encoded user/password, или `None` если прокси не настроен.
 fn proxy_url(cfg: &ProxyConfig) -> Option<String> {
-    use url::Url;
+    use reqwest::Url;
 
     let host = cfg.host.as_deref()?.trim();
     if host.is_empty() {

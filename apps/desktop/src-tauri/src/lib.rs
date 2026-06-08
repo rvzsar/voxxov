@@ -51,17 +51,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             let state = AppState::new(cfg.clone());
-            let state_for_init = state.clone();
 
-            // Eager init yt-dlp в фоне. При первом `enqueue_url` он уже
-            // будет готов (или `get()` подождёт через OnceCell).
+            // Eager init yt-dlp в фоне: при первом `enqueue_url` yt-dlp.exe
+            // и ffmpeg.exe уже будут скачаны (или ошибка залогируется).
             // Ставим state в Tauri ДО spawn, чтобы UI мог через
-            // `app.state::<AppState>()` проверить `state.downloader.get()`.
+            // `app.state::<AppState>()` сразу проверять состояние.
             let mut events_rx = state.events.subscribe();
             app.manage(state);
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = crate::ytdlp::YtDlpRunner::get(&state_for_init).await {
-                    tracing::warn!("yt-dlp eager init failed: {e}");
+                if let Err(e) = crate::ytdlp::YtDlpRunner::preflight().await {
+                    tracing::warn!("yt-dlp preflight failed: {e}");
                 }
             });
 

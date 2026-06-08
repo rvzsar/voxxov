@@ -46,15 +46,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # ONNX Runtime (sherpa-onnx — native C, static linking)
+# ONNX / ASR (sherpa-onnx)
 sherpa-onnx = { version = "1.13.2", default-features = false, features = ["static"] }
 hound = "3.5"
 
-# yt-dlp wrapper (auto-installs yt-dlp + ffmpeg, GPL-3.0)
-yt-dlp = { version = "2.7.2", default-features = false, features = ["cache-redb", "rustls"] }
-
-# HTTP client для скачивания моделей с GitHub Releases.
-# Версия 0.13 совпадает с transitive-зависимостью крейта `yt-dlp`.
+# HTTP client для скачивания моделей с GitHub Releases + yt-dlp/ffmpeg auto-install.
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+
+# zip extraction (для ffmpeg auto-download из BtbN's Windows builds).
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
@@ -63,10 +63,8 @@ once_cell = "1"
 parking_lot = "0.12"
 sha2 = "0.10"
 
-# yt-dlp 2.7.2 зависит от `lofty ^0.23.2`, но все 0.23.x версии yanked
-# 12.04.2026. Patch на 0.23.3 с git форка (последняя совместимая не-yanked).
-[patch.crates-io]
-lofty = { git = "https://github.com/Serial-ATA/lofty-rs", tag = "0.23.3" }
+# (lofty patch removed — was only needed for the old yt-dlp crate
+#  which depended on a yanked 0.23.x. With subprocess yt-dlp gone.)
 
 [profile.release]
 opt-level = 3
