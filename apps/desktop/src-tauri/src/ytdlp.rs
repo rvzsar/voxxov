@@ -13,7 +13,7 @@ use crate::config::{AppConfig, DownloadConfig};
 use crate::error::{AppError, AppResult};
 use crate::proxy;
 use crate::state::AppState;
-use crate::types::{BackendEvent, MediaInfo};
+use crate::types::{JobUpdate, MediaInfo, Progress};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -250,13 +250,23 @@ fn build_args(dl: &DownloadConfig) -> Vec<String> {
 
 fn forward_progress(state: &AppState, job_id: &str, line: &str) {
     if let Some(pct) = parse_download_pct(line) {
-        let _ = state.events.send(BackendEvent::DownloadProgress {
-            id: job_id.to_string(),
-            pct,
-            label: "Загрузка".to_string(),
-            speed: None,
-            eta: None,
-        });
+        // Update the Job's `progress.pct` directly via update_job. The store
+        // re-emits a `JobUpdated` event which the UI merges into `job.progress.pct`
+        // (the same field the ProgressBar component reads). Sending a separate
+        // `DownloadProgress` event would be ignored by the UI — it only watches
+        // `job.progress.pct`.
+        state.update_job(
+            job_id,
+            JobUpdate {
+                progress: Some(Progress {
+                    pct,
+                    label: "Загрузка".to_string(),
+                    speed: None,
+                    eta: None,
+                }),
+                ..Default::default()
+            },
+        );
     }
     if line.contains("ERROR:") {
         state.log_line(job_id, format!("yt-dlp: {line}"));

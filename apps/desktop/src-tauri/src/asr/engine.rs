@@ -141,6 +141,21 @@ pub async fn transcribe(
                 seg.offset_sec + seg_dur
             ),
         );
+        // Per-segment progress: 1/n, 2/n, ..., n/n. The store resets pct
+        // to 0 in set_stage(Transcribing), so the bar moves 0→100% across
+        // all segments.
+        state.update_job(
+            job_id,
+            crate::types::JobUpdate {
+                progress: Some(crate::types::Progress {
+                    pct: ((i + 1) as f32 / total as f32).clamp(0.0, 1.0),
+                    label: format!("ASR: {}/{}", i + 1, total),
+                    speed: None,
+                    eta: None,
+                }),
+                ..Default::default()
+            },
+        );
 
         let eng = Arc::clone(&engine);
         let chunk = tokio::task::spawn_blocking(move || {

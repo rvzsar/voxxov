@@ -62,19 +62,14 @@ impl AppState {
         }
     }
 
-    /// Установить стадию + label. Сохраняет `progress.pct > 0`,
-    /// чтобы прогресс-бар не отскакивал назад при смене стадии.
+    /// Установить стадию + label. **Сбрасывает** `progress.pct` в 0 при
+    /// старте новой нетерминальной стадии, чтобы per-stage прогресс
+    /// (download %, ffmpeg `time=` , ASR сегмент) был виден с нуля,
+    /// а не упирался в "never go back" guard из предыдущей стадии.
     pub fn set_stage(&self, id: &str, stage: JobStage, label: impl Into<String>) {
         let label = label.into();
-        let current_pct = self
-            .jobs
-            .read()
-            .get(id)
-            .map(|j| j.progress.pct)
-            .unwrap_or(0.0);
         let pct = match stage {
             JobStage::Done | JobStage::Failed | JobStage::Cancelled => 1.0,
-            _ if current_pct > 0.0 => current_pct,
             _ => 0.0,
         };
         self.update_job(
