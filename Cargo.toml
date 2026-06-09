@@ -7,8 +7,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.77"
 license = "GPL-3.0-only"
-repository = "https://github.com/your-org/gigaam-desktop"
-authors = ["GigaAM Desktop contributors"]
+repository = "https://github.com/rvzsar/voxxov"
+authors = ["Voxxov contributors"]
 
 [workspace.dependencies]
 # Tauri

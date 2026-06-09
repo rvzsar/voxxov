@@ -3,7 +3,7 @@
 //! Layout relative to the .exe:
 //!
 //! ```text
-//! gigaam-desktop.exe
+//! voxxov.exe
 //! ├── data/                  ← mutable state
 //! │   ├── config.toml
 //! │   ├── logs/app.log

@@ -1,4 +1,4 @@
-# GigaAM Desktop
+# Voxxov
 
 Десктоп-приложение для скачивания видео (yt-dlp) и распознавания русской речи на базе [GigaAM-V3](https://github.com/salute-developers/GigaAM).
 
@@ -71,8 +71,8 @@ keepFiles = 3
 ## Раскладка
 
 ```
-GigaAM Desktop/
-├── gigaam-desktop.exe
+Voxxov/
+├── voxxov.exe
 ├── data/             # config.toml, logs/, jobs/<id>/, transcripts/
 ├── models/           # авто-скачивается GigaAM-V3
 └── bin/              # авто-скачиваются yt-dlp, ffmpeg

@@ -7,7 +7,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 pub fn init(cfg: &LoggingConfig) {
     let level = cfg.level.clone();
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(format!("gigaam_desktop_lib={level},tauri=warn,info")));
+        .unwrap_or_else(|_| EnvFilter::new(format!("voxxov_lib={level},tauri=warn,info")));
 
     let stderr_layer = fmt::layer()
         .with_writer(std::io::stderr)

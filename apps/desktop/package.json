@@ -1,9 +1,9 @@
 {
-  "name": "gigaam-desktop",
+  "name": "voxxov",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "GigaAM-V3 desktop app: yt-dlp + ffmpeg + ONNX RNN-T",
+  "description": "Voxxov: portable voice-to-text using GigaAM-V3 (sherpa-onnx)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

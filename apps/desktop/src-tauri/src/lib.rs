@@ -32,7 +32,7 @@ use tauri::{Emitter, Manager};
 pub fn run() {
     // Инициализируем data_root раньше всего — пути нужны и для чтения
     // конфига, и для файла лога. Если .exe в read-only месте — паникуем
-    // сразу с понятным сообщением (GIGAAM_DATA_DIR как escape hatch).
+    // сразу с понятным сообщением.
     crate::paths::init_data_root();
 
     // Каталоги создаём до первого обращения — иначе первый запуск
@@ -82,7 +82,7 @@ pub fn run() {
                 }
             });
 
-            tracing::info!("GigaAM Desktop started");
+            tracing::info!("Voxxov started");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
