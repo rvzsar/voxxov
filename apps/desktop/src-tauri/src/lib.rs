@@ -93,10 +93,7 @@ pub fn run() {
             commands::cancel_job,
             commands::get_config,
             commands::save_config,
-            commands::fetch_metadata,
             commands::diagnose,
-            commands::check_model_status,
-            commands::download_model,
             commands::save_job,
             commands::get_job_workdir,
         ])

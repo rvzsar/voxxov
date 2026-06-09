@@ -2,10 +2,9 @@
 
 use crate::config::{self, AppConfig};
 use crate::error::{AppError, AppResult};
-use crate::models::{self, ModelStatus};
 use crate::pipeline;
 use crate::state::AppState;
-use crate::types::{FileInfo, Job, JobId, JobSource, MediaInfo, SidecarStatus};
+use crate::types::{FileInfo, Job, JobId, JobSource, SidecarStatus};
 use std::path::{Path, PathBuf};
 
 #[tauri::command]
@@ -82,11 +81,6 @@ pub fn save_config(
     Ok(cfg)
 }
 
-#[tauri::command]
-pub async fn fetch_metadata(url: String) -> AppResult<MediaInfo> {
-    crate::ytdlp::YtDlpRunner::fetch_metadata(&url).await
-}
-
 const MEDIA_EXTENSIONS: &[&str] = &[
     "wav", "mp3", "flac", "ogg", "m4a", "aac", "wma", "opus",
     "mp4", "mkv", "webm", "avi", "mov", "flv", "wmv", "m4v", "ts", "mts",
@@ -144,45 +138,6 @@ fn scan_dir_recursive(dir: &std::path::Path, out: &mut Vec<FileInfo>) -> AppResu
         }
     }
     Ok(())
-}
-
-#[tauri::command]
-pub fn check_model_status(model_dir: Option<String>) -> ModelStatus {
-    let dir = model_dir
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(models::default_model_dir);
-    models::check_status(&dir)
-}
-
-#[tauri::command]
-pub async fn download_model(
-    state: tauri::State<'_, AppState>,
-    job_id: String,
-    model_dir: Option<String>,
-) -> AppResult<ModelStatus> {
-    let dir = model_dir
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(models::default_model_dir);
-    let job_id_for_log = job_id.clone();
-    state.log_line(&job_id, "model: starting download");
-
-    let result = models::download_all(&dir, |downloaded, total| {
-        let pct = if total > 0 {
-            (downloaded as f32 / total as f32) * 100.0
-        } else {
-            0.0
-        };
-        tracing::info!("model: {}% ({} / {})", pct as u32, downloaded, total);
-    })
-    .await;
-
-    match &result {
-        Ok(_) => state.log_line(&job_id_for_log, "model: download complete"),
-        Err(e) => state.log_line(&job_id_for_log, format!("model: download failed: {e}")),
-    }
-    result
 }
 
 #[tauri::command]

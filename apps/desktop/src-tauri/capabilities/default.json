@@ -11,8 +11,6 @@
     "core:app:default",
     "core:path:default",
     "core:resources:default",
-    "core:menu:default",
-    "core:tray:default",
     "dialog:default",
     "opener:default",
     "opener:allow-reveal-item-in-dir"
