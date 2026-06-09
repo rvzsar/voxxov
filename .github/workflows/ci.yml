@@ -73,7 +73,7 @@ jobs:
       - name: Upload portable .exe
         uses: actions/upload-artifact@v4
         with:
-          name: gigaam-desktop-windows-msvc-portable
-          path: target/x86_64-pc-windows-msvc/debug/gigaam-desktop.exe
+          name: voxxov-windows-msvc-portable
+          path: target/x86_64-pc-windows-msvc/debug/voxxov.exe
           if-no-files-found: error
           retention-days: 14

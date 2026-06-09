@@ -55,7 +55,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: GigaAM Desktop ${{ github.ref_name }}
+          name: Voxxov ${{ github.ref_name }}
           body: |
             Portable Windows build.
 
@@ -65,5 +65,5 @@ jobs:
             - No Visual C++ Redistributable required
           draft: true
           prerelease: false
-          files: target/x86_64-pc-windows-msvc/release/gigaam-desktop.exe
+          files: target/x86_64-pc-windows-msvc/release/voxxov.exe
           fail_on_unmatched_files: true
