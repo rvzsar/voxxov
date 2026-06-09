@@ -50,9 +50,3 @@ fn proxy_url(cfg: &ProxyConfig) -> Option<String> {
     }
     Some(url.as_str().to_string())
 }
-
-fn no_proxy_list(_cfg: &ProxyConfig) -> Option<Vec<String>> {
-    // TODO: yt-dlp CLI не имеет `--no-proxy`; NO_PROXY обрабатывается
-    // libcurl/reqwest. Пока — no-op.
-    None
-}

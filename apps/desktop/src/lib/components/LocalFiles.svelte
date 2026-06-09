@@ -14,7 +14,6 @@
   let processingTotal = $state(0);
 
   async function pickFolder() {
-    if (!api.isTauri) { toast.error('Только в приложении'); return; }
     const { open } = await import('@tauri-apps/plugin-dialog');
     const result = await open({ directory: true, multiple: false });
     if (typeof result === 'string') { folderPath = result; await doScan(); }

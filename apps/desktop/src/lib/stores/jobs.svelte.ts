@@ -56,23 +56,6 @@ class JobsStore {
         this.logs = new Map(this.logs).set(ev.id, next);
         break;
       }
-      case "download:progress": {
-        this.jobs = this.jobs.map((j) =>
-          j.id === ev.id
-            ? {
-                ...j,
-                stage: "downloading",
-                progress: {
-                  pct: ev.pct,
-                  label: ev.label,
-                  speed: ev.speed,
-                  eta: ev.eta,
-                },
-              }
-            : j,
-        );
-        break;
-      }
       case "job:done":
         this.jobs = this.jobs.map((j) =>
           j.id === ev.id

@@ -15,10 +15,8 @@
 //! └── bin/                   ← yt-dlp.exe, ffmpeg.exe (auto-downloaded)
 //! ```
 //!
-//! Override via env var `GIGAAM_DATA_DIR` if you need the data somewhere
-//! else (RAM disk, different drive). No fallback to `%APPDATA%` — if the
-//! .exe lives in a read-only location, `init_data_root` panics with a
-//! clear error message at startup.
+//! No fallback to `%APPDATA%` — if the .exe lives in a read-only
+//! location, `init_data_root` panics with a clear error message at startup.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -37,19 +35,14 @@ pub fn init_data_root() {
 }
 
 fn resolve_data_root() -> PathBuf {
-    let root = std::env::var_os("GIGAAM_DATA_DIR")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        })
+    let root = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     if let Err(e) = std::fs::create_dir_all(&root) {
         panic!(
             "GigaAM: cannot create data root {}: {e}. \
-             Move the .exe to a writable folder, or set GIGAAM_DATA_DIR.",
+             Move the .exe to a writable folder.",
             root.display()
         );
     }

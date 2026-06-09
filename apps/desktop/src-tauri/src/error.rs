@@ -45,35 +45,11 @@ pub enum AppError {
     Other(String),
 }
 
-impl AppError {
-    /// Краткий стабильный код ошибки для UI.
-    pub fn code(&self) -> &'static str {
-        match self {
-            AppError::Io(_) => "io",
-            AppError::TomlDe(_) | AppError::TomlSer(_) => "toml",
-            AppError::Json(_) => "json",
-            AppError::YtDlp(_) => "ytdlp",
-            AppError::Ffmpeg(_) => "ffmpeg",
-            AppError::Sidecar(_) => "sidecar",
-            AppError::Proxy(_) => "proxy",
-            AppError::Job(_) => "job",
-            AppError::Asr(_) => "asr",
-            AppError::Cancelled => "cancelled",
-            AppError::InvalidUrl(_) => "invalid_url",
-            AppError::Other(_) => "other",
-        }
-    }
-}
-
-/// Tauri ожидает, что `Result<T, E>` сериализуется в JSON.
-/// Отдаём строку-сообщение + стабильный код в объекте.
+/// Tauri сериализует `Result<T, E>` в JSON. Отдаём строку — проще и
+/// фронту достаточно (он использует только `.message` через `Error.message`).
 impl Serialize for AppError {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut st = s.serialize_struct("AppError", 2)?;
-        st.serialize_field("code", self.code())?;
-        st.serialize_field("message", &self.to_string())?;
-        st.end()
+        s.serialize_str(&self.to_string())
     }
 }
 

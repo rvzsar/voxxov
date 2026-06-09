@@ -15,12 +15,8 @@
 
   onMount(async () => {
     await Promise.all([settingsStore.load(), jobsStore.init()]);
-    if (api.isTauri) {
-      const d = await api.diagnose();
-      backendOk = !!d.ffmpeg && !!d.ytdlp;
-    } else {
-      backendOk = false;
-    }
+    const d = await api.diagnose();
+    backendOk = !!d.ffmpeg && !!d.ytdlp;
   });
 </script>
 
@@ -74,7 +70,7 @@
       title={backendOk === false ? 'Нажмите, чтобы открыть настройки' : ''}
     >
       <span class="dot" class:on={backendOk === true} class:warn={backendOk === false}></span>
-      {#if !api.isTauri}dev-mock{:else if backendOk === true}ready{:else if backendOk === false}offline — yt-dlp/ffmpeg не найдены{:else}…{/if}
+      {#if backendOk === true}ready{:else if backendOk === false}offline — yt-dlp/ffmpeg не найдены{:else}…{/if}
     </button>
     <span class="sb-sep"></span>
     <span class="sb-item">{jobsStore.jobs.length} jobs</span>
