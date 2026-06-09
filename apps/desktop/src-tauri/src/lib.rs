@@ -91,6 +91,7 @@ pub fn run() {
             commands::scan_folder,
             commands::list_jobs,
             commands::cancel_job,
+            commands::clear_done_jobs,
             commands::get_config,
             commands::save_config,
             commands::diagnose,

@@ -98,6 +98,12 @@ class JobsStore {
     await api.cancelJob(id);
   }
 
+  /** Очистить done/failed/cancelled задачи (и в памяти, и в jobs.json). */
+  async clearDone() {
+    await api.clearDoneJobs();
+    this.jobs = await api.listJobs();
+  }
+
   select(id: JobId | null) {
     this.activeId = id;
   }

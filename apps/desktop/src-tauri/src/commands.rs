@@ -67,6 +67,11 @@ pub fn cancel_job(state: tauri::State<'_, AppState>, id: String) -> bool {
 }
 
 #[tauri::command]
+pub fn clear_done_jobs(state: tauri::State<'_, AppState>) {
+    state.clear_terminal_jobs();
+}
+
+#[tauri::command]
 pub fn get_config(state: tauri::State<'_, AppState>) -> AppConfig {
     state.config()
 }

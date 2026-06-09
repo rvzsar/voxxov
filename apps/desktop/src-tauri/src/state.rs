@@ -146,6 +146,13 @@ impl AppState {
         }
     }
 
+    /// Удалить все терминальные задачи (done/failed/cancelled) из памяти и
+    /// history-файла. Активные (queued/transcribing/etc.) сохраняются.
+    pub fn clear_terminal_jobs(&self) {
+        self.jobs.write().retain(|_, j| !is_terminal(j.stage));
+        self.save_jobs();
+    }
+
     // ---------------- persistence ----------------
 
     /// Загрузить все jobs из `data/jobs.json`. Отсутствие файла = пустая карта.

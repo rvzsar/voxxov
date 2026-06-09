@@ -53,6 +53,10 @@ export const api = {
     return tInvoke("cancel_job", { id });
   },
 
+  async clearDoneJobs(): Promise<void> {
+    return tInvoke("clear_done_jobs");
+  },
+
   async getConfig(): Promise<AppConfig> {
     return tInvoke<AppConfig>("get_config");
   },

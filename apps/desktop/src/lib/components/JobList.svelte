@@ -18,13 +18,19 @@
     jobsStore.jobs.filter(j => j.stage === 'failed' || j.stage === 'cancelled').length
   );
 
-  function clearDone() {
+  async function clearDone() {
     const done = doneCount + failCount;
     if (done === 0) {
       toast.info('Нет завершённых задач');
       return;
     }
-    toast.info(`Завершённых задач: ${done}. Очистка будет в Sprint 4 (SQLite).`);
+    if (!confirm(`Удалить ${done} завершённых задач? Активные останутся.`)) return;
+    try {
+      await jobsStore.clearDone();
+      toast.success(`Удалено ${done} задач`);
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
   }
 </script>
 
@@ -38,7 +44,7 @@
         {#if doneCount > 0}<span class="badge done">{doneCount} готово</span>{/if}
         {#if failCount > 0}<span class="badge err">{failCount} ошибок</span>{/if}
       </span>
-      <button class="clear-btn" type="button" onclick={clearDone} title="Показать информацию о завершённых">…</button>
+      <button class="clear-btn" type="button" onclick={clearDone} title="Удалить завершённые и ошибочные задачи">очистить</button>
     {/if}
   </div>
   {#if jobsStore.jobs.length === 0}
