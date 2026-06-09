@@ -91,6 +91,11 @@ pub struct ModelFile {
 }
 
 /// Проверить статус модели. Не качает — только файловая система.
+/// Size-only check (без SHA256): ~0.1ms на вызов. Полная SHA256-проверка
+/// делается в `download_all` сразу после скачивания — там она нужна для
+/// целостности скачанного файла. Здесь верифицировать диск не нужно: после
+/// успешного download файлы считаются валидными, и любая последующая
+/// порча — это уже не наш сценарий.
 pub fn check_status(model_dir: &Path) -> ModelStatus {
     let mut present = Vec::new();
     let mut missing = Vec::new();
@@ -103,14 +108,7 @@ pub fn check_status(model_dir: &Path) -> ModelStatus {
             .find(|(n, _)| *n == *name)
             .map(|(_, s)| *s)
             .unwrap_or(0);
-        let expected_sha = MODELS_SHA256
-            .iter()
-            .find(|(n, _)| *n == *name)
-            .map(|(_, h)| *h)
-            .unwrap_or("");
-        let size_ok = size >= min_size;
-        let hash_ok = expected_sha.is_empty() || verify_sha256(&path, expected_sha).is_ok();
-        if size_ok && hash_ok {
+        if size >= min_size {
             present.push(ModelFile {
                 name: name.to_string(),
                 size,

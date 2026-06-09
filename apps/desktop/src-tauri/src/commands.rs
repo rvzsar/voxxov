@@ -95,34 +95,34 @@ const MEDIA_EXTENSIONS: &[&str] = &[
 #[tauri::command]
 pub async fn scan_folder(path: String) -> AppResult<Vec<FileInfo>> {
     let dir = PathBuf::from(path.trim());
-    let meta = tokio::fs::metadata(&dir)
-        .await
+    let meta = std::fs::metadata(&dir)
         .map_err(|e| AppError::Other(format!("stat {}: {e}", dir.display())))?;
     if !meta.is_dir() {
         return Err(AppError::Other(format!("not a directory: {}", dir.display())));
     }
-    let mut files = Vec::new();
-    scan_dir_recursive(&dir, &mut files).await?;
-    files.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(files)
+    // Sync I/O в blocking pool: на больших папках быстрее чем тысячи
+    // `tokio::fs::metadata` с yield'ами между ними.
+    tokio::task::spawn_blocking(move || -> AppResult<Vec<FileInfo>> {
+        let mut files = Vec::new();
+        scan_dir_recursive(&dir, &mut files)?;
+        files.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(files)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("scan join: {e}")))?
 }
 
-async fn scan_dir_recursive(dir: &std::path::Path, out: &mut Vec<FileInfo>) -> AppResult<()> {
-    let mut rd = tokio::fs::read_dir(dir)
-        .await
+fn scan_dir_recursive(dir: &std::path::Path, out: &mut Vec<FileInfo>) -> AppResult<()> {
+    let rd = std::fs::read_dir(dir)
         .map_err(|e| AppError::Other(format!("read dir {}: {e}", dir.display())))?;
-    while let Some(entry) = rd
-        .next_entry()
-        .await
-        .map_err(|e| AppError::Other(e.to_string()))?
-    {
+    for entry in rd.flatten() {
         let path = entry.path();
-        let file_type = match entry.file_type().await {
+        let file_type = match entry.file_type() {
             Ok(ft) => ft,
             Err(_) => continue,
         };
         if file_type.is_dir() {
-            Box::pin(scan_dir_recursive(&path, out)).await?;
+            scan_dir_recursive(&path, out)?;
         } else if file_type.is_file() {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 let ext_lower = ext.to_lowercase();
@@ -132,7 +132,7 @@ async fn scan_dir_recursive(dir: &std::path::Path, out: &mut Vec<FileInfo>) -> A
                         .and_then(|s| s.to_str())
                         .unwrap_or("unknown")
                         .to_string();
-                    let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                     out.push(FileInfo {
                         path: path.to_string_lossy().to_string(),
                         name,
@@ -214,7 +214,7 @@ pub fn get_job_workdir(job_id: String) -> AppResult<String> {
 /// Скопировать всю папку задачи (видео + аудио + txt/srt/json транскрипты)
 /// в `<dest_dir>/<job_id>/`. Возвращает путь к созданной папке.
 #[tauri::command]
-pub fn save_job(job_id: String, dest_dir: String) -> AppResult<String> {
+pub async fn save_job(job_id: String, dest_dir: String) -> AppResult<String> {
     let src = crate::paths::job_workdir(&job_id);
     if !src.is_dir() {
         return Err(AppError::Other(format!(
@@ -236,9 +236,14 @@ pub fn save_job(job_id: String, dest_dir: String) -> AppResult<String> {
             target.display()
         )));
     }
-    copy_dir_recursive(&src, &target).map_err(|e| {
-        AppError::Other(format!("copy {} → {}: {e}", src.display(), target.display()))
-    })?;
+    // Sync I/O в blocking pool: на больших видеофайлах копирование может
+    // занимать минуты — нельзя блокировать tokio worker thread.
+    let src_clone = src.clone();
+    let target_clone = target.clone();
+    tokio::task::spawn_blocking(move || copy_dir_recursive(&src_clone, &target_clone))
+        .await
+        .map_err(|e| AppError::Other(format!("copy join: {e}")))?
+        .map_err(|e| AppError::Other(format!("copy {} → {}: {e}", src.display(), target.display())))?;
     Ok(target.to_string_lossy().to_string())
 }
 

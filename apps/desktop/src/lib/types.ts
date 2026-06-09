@@ -79,8 +79,6 @@ export type AsrConfig = {
   sampleRate: number;
   language: string;
   device: AsrDevice;
-  maxSegmentSec: number;
-  overlapSec: number;
   beamSize: number;
 };
 
@@ -127,8 +125,6 @@ export const DEFAULT_CONFIG: AppConfig = {
     sampleRate: 16000,
     language: "ru",
     device: "cpu",
-    maxSegmentSec: 30,
-    overlapSec: 1,
     beamSize: 5,
   },
   output: {

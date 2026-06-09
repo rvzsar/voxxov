@@ -1,26 +1,28 @@
-//! ASR-orchestrator.
+//! ASR-orchestrator. Sherpa-onnx (static C library, native Rust bindings).
 //!
 //! `transcribe` — async entry point. Тяжёлая работа (чтение WAV, создание
-//! recognizer, decode сегментов) вынесена в `tokio::task::spawn_blocking`,
+//! recognizer, decode) унесена в один `tokio::task::spawn_blocking`,
 //! чтобы не блокировать tokio runtime thread.
 //!
-//! Длинное аудио (> `max_segment_sec`) разрезается на чанки с overlap;
-//! cancellation проверяется между чанками. Сам `decode` отменить нельзя
-//! (sherpa-onnx не поддерживает mid-cancel C-API).
+//! Cancellation проверяется перед загрузкой модели. Сам `decode` отменить
+//! нельзя (sherpa-onnx не поддерживает mid-cancel C-API).
+//!
+//! Если `model_dir` начинается с `cmd:` — fallback на внешний CLI
+//! (см. `cmd_fallback`).
 
 use super::grouping::group_into_segments;
-use super::segment::{read_wav_samples, split_into_segments};
-use super::worker::AsrEngine;
 use super::Transcription;
 use crate::config::AsrConfig;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
-use std::path::Path;
-use std::sync::Arc;
+use sherpa_onnx::{
+    OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig,
+};
+use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
 /// Main entry point: transcribe audio file → text + timed segments.
-/// `model_path` — директория с 4 файлами GigaAM; проверка/загрузка
+/// `model_dir` — директория с 4 файлами GigaAM; проверка/загрузка
 /// делается в `pipeline.rs::ensure_asr_model` до этого вызова.
 pub async fn transcribe(
     state: &AppState,
@@ -67,129 +69,81 @@ pub async fn transcribe(
         _ => "cpu",
     };
     let num_threads = num_cpus().min(4);
-
-    // hound — sync I/O, уходим в blocking pool.
-    let audio_path = audio.to_path_buf();
-    let samples = tokio::task::spawn_blocking(move || read_wav_samples(&audio_path))
-        .await
-        .map_err(|e| AppError::Asr(format!("wav reader join: {e}")))??;
+    let beam_size = cfg.beam_size;
 
     state.log_line(
         job_id,
-        format!(
-            "ASR: {} samples @ {}Hz, {:.1}s",
-            samples.samples.len(),
-            samples.sample_rate,
-            samples.duration_sec()
-        ),
-    );
-
-    // Сегментация.
-    let seg_sec = cfg.max_segment_sec.max(1.0);
-    let overlap_sec = cfg.overlap_sec.max(0.0);
-    let segments = split_into_segments(&samples.samples, samples.sample_rate, seg_sec, overlap_sec);
-    if segments.is_empty() {
-        return Err(AppError::Asr("no audio samples after segmentation".into()));
-    }
-    if segments.len() > 1 {
-        state.log_line(
-            job_id,
-            format!(
-                "ASR: split into {} segments (~{:.0}s, overlap {:.1}s)",
-                segments.len(),
-                seg_sec,
-                overlap_sec
-            ),
-        );
-    }
-
-    // Recognizer (тяжёлая загрузка ONNX).
-    state.log_line(
-        job_id,
-        format!("ASR: creating recognizer (threads={num_threads}, provider={provider})"),
+        format!("ASR: creating recognizer (threads={num_threads}, provider={provider}, beam={beam_size})"),
     );
     if cancel.is_cancelled() {
         return Err(AppError::Cancelled);
     }
-    let engine = tokio::task::spawn_blocking({
-        let encoder = encoder;
-        let decoder = decoder;
-        let joiner = joiner;
-        let tokens = tokens;
-        let beam_size = cfg.beam_size;
-        move || AsrEngine::new(&encoder, &decoder, &joiner, &tokens, num_threads, provider, beam_size)
+
+    // WAV-чтение + создание recognizer + decode — всё sync, в blocking pool.
+    let audio_path = audio.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || -> AppResult<sherpa_onnx::OfflineRecognizerResult> {
+        let wave = sherpa_onnx::Wave::read(&audio_path.to_string_lossy())
+            .ok_or_else(|| AppError::Asr(format!("read wav {}: failed", audio_path.display())))?;
+        let samples = wave.samples();
+        if samples.is_empty() {
+            return Err(AppError::Asr("no audio samples".into()));
+        }
+        let sample_rate = wave.sample_rate();
+
+        let mut config = OfflineRecognizerConfig::default();
+        config.model_config.transducer = OfflineTransducerModelConfig {
+            encoder: Some(encoder.to_string_lossy().into_owned()),
+            decoder: Some(decoder.to_string_lossy().into_owned()),
+            joiner: Some(joiner.to_string_lossy().into_owned()),
+        };
+        config.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
+        config.model_config.num_threads = num_threads as i32;
+        config.model_config.provider = Some(provider.to_string());
+
+        // beam > 1 → modified_beam_search; beam == 1 → дефолт (greedy_search) из C-стороны.
+        let beam = beam_size.clamp(1, 64);
+        if beam > 1 {
+            config.decoding_method = Some("modified_beam_search".to_string());
+            config.max_active_paths = beam as i32;
+        }
+
+        let recognizer = OfflineRecognizer::create(&config).ok_or_else(|| {
+            AppError::Asr("failed to create OfflineRecognizer — check model paths and provider".into())
+        })?;
+
+        let stream = recognizer.create_stream();
+        stream.accept_waveform(sample_rate, samples);
+        recognizer.decode(&stream);
+        // recognizer и stream дропаются здесь — больше не нужны.
+        stream
+            .get_result()
+            .ok_or_else(|| AppError::Asr("decode returned no result".into()))
     })
     .await
-    .map_err(|e| AppError::Asr(format!("recognizer join: {e}")))??;
-    let engine = Arc::new(engine);
-    let total = segments.len();
+    .map_err(|e| AppError::Asr(format!("asr join: {e}")))??;
 
-    let mut texts: Vec<String> = Vec::with_capacity(total);
-    let mut timed: Vec<super::TimedSegment> = Vec::new();
-    for (i, seg) in segments.into_iter().enumerate() {
-        if cancel.is_cancelled() {
-            return Err(AppError::Cancelled);
-        }
-        let seg_dur = seg.samples.len() as f32 / samples.sample_rate as f32;
-        state.log_line(
-            job_id,
-            format!(
-                "ASR: segment {}/{} ({:.1}s–{:.1}s)",
-                i + 1,
-                total,
-                seg.offset_sec,
-                seg.offset_sec + seg_dur
-            ),
-        );
-        // Per-segment progress: 1/n, 2/n, ..., n/n. The store resets pct
-        // to 0 in set_stage(Transcribing), so the bar moves 0→100% across
-        // all segments.
-        state.update_job(
-            job_id,
-            crate::types::JobUpdate {
-                progress: Some(crate::types::Progress {
-                    pct: ((i + 1) as f32 / total as f32).clamp(0.0, 1.0),
-                    label: format!("ASR: {}/{}", i + 1, total),
-                    speed: None,
-                    eta: None,
-                }),
-                ..Default::default()
-            },
-        );
+    let tokens = result.tokens;
+    let timestamps = result.timestamps;
+    let durations = result.durations;
+    let duration_sec = timestamps
+        .as_ref()
+        .and_then(|t| t.last().copied())
+        .unwrap_or(0.0);
 
-        let eng = Arc::clone(&engine);
-        let chunk = tokio::task::spawn_blocking(move || {
-            eng.decode(&seg.samples, seg.sample_rate)
-        })
-        .await
-        .map_err(|e| AppError::Asr(format!("decode join: {e}")))??;
-
-        if !chunk.text.is_empty() {
-            texts.push(chunk.text);
-        }
-        let mut segs = group_into_segments(
-            &chunk.tokens,
-            chunk.timestamps.as_deref(),
-            chunk.durations.as_deref(),
-            seg.offset_sec,
-            seg_dur,
-        );
-        timed.append(&mut segs);
-    }
-
-    let combined = texts.join(" ").trim().to_string();
     state.log_line(
         job_id,
         format!(
-            "ASR: done, {} chars ({} segments, {} timed)",
-            combined.len(),
-            total,
-            timed.len()
+            "ASR: {} tokens, {:.1}s audio, text={} chars",
+            tokens.len(),
+            duration_sec,
+            result.text.chars().count(),
         ),
     );
+
+    let segments = group_into_segments(&tokens, timestamps.as_deref(), durations.as_deref(), 0.0, duration_sec);
     Ok(Transcription {
-        text: combined,
-        segments: timed,
+        text: result.text.trim().to_string(),
+        segments,
     })
 }
 
@@ -198,9 +152,8 @@ pub async fn transcribe(
 /// Найти encoder/decoder/joiner/tokens в `model_dir` (должна быть директорией).
 pub fn discover_model_files(
     model_dir: &str,
-) -> AppResult<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)>
-{
-    let dir = std::path::Path::new(model_dir);
+) -> AppResult<(PathBuf, PathBuf, PathBuf, PathBuf)> {
+    let dir = Path::new(model_dir);
     if !dir.is_dir() {
         return Err(AppError::Asr(format!(
             "model_dir is not a directory: {}",

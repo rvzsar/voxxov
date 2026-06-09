@@ -40,7 +40,6 @@ tracing-subscriber = { workspace = true }
 
 # ONNX / ASR (sherpa-onnx)
 sherpa-onnx = { workspace = true }
-hound = { workspace = true }
 
 # HTTP client (для скачивания моделей + yt-dlp/ffmpeg auto-install)
 reqwest = { workspace = true }

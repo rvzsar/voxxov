@@ -45,10 +45,8 @@ tracing = "0.1"
 # json feature removed: we use plain fmt, not JSON-formatted logs.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# ONNX Runtime (sherpa-onnx — native C, static linking)
-# ONNX / ASR (sherpa-onnx)
+# ONNX / ASR (sherpa-onnx — native C, static linking)
 sherpa-onnx = { version = "1.13.2", default-features = false, features = ["static"] }
-hound = "3.5"
 
 # HTTP client для скачивания моделей с GitHub Releases + yt-dlp/ffmpeg auto-install.
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }

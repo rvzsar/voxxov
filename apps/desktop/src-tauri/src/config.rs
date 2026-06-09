@@ -78,8 +78,6 @@ pub struct AsrConfig {
     pub sample_rate: u32,
     pub language: String,
     pub device: AsrDevice,
-    pub max_segment_sec: f32,
-    pub overlap_sec: f32,
     pub beam_size: u32,
 }
 
@@ -90,8 +88,6 @@ impl Default for AsrConfig {
             sample_rate: 16000,
             language: "ru".to_string(),
             device: AsrDevice::Cpu,
-            max_segment_sec: 30.0,
-            overlap_sec: 1.0,
             beam_size: 5,
         }
     }
