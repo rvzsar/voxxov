@@ -178,6 +178,32 @@ export const api = {
     return revealItemInDir(path);
   },
 
+  /** Абсолютный путь к папке задачи (`<data_root>/data/jobs/<id>/`). */
+  async getJobWorkdir(jobId: JobId): Promise<string> {
+    if (!isTauri) throw new Error("Tauri backend недоступен");
+    return tInvoke<string>("get_job_workdir", { jobId });
+  },
+
+  /**
+   * Скопировать всю папку задачи (видео + аудио + txt/srt/json) в
+   * `<destDir>/<jobId>/`. Возвращает путь к созданной папке.
+   */
+  async saveJob(jobId: JobId, destDir: string): Promise<string> {
+    if (!isTauri) throw new Error("Tauri backend недоступен");
+    return tInvoke<string>("save_job", { jobId, destDir });
+  },
+
+  /**
+   * Нативный диалог выбора папки. Возвращает путь или null.
+   * `title` — заголовок окна.
+   */
+  async pickFolder(title: string): Promise<string | null> {
+    if (!isTauri) return null;
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const result = await open({ directory: true, multiple: false, title });
+    return typeof result === "string" ? result : null;
+  },
+
   /** Подписка на единый поток BackendEvent от бэка */
   onJobEvent(handler: (e: BackendEvent) => void): () => void {
     if (!isTauri) return () => {};

@@ -59,3 +59,7 @@ gigaam-desktop-*.zip
 *.sqlite-journal
 *.tmp
 .cache/
+
+# --- Runtime data (per-job videos/audio/transcripts, downloaded models, logs) ---
+# Создаётся рядом с .exe при первом запуске. Не для гита.
+data/

@@ -23,12 +23,33 @@
     }
   }
 
-  async function openResult(e: MouseEvent | KeyboardEvent) {
-    e.stopPropagation();
-    if (job.transcriptPath) {
-      try { await api.revealInFolder(job.transcriptPath); } catch (err) {
-        toast.error('Не удалось открыть папку');
-      }
+  let saving = $state(false);
+  let revealing = $state(false);
+
+  async function openJobFolder() {
+    revealing = true;
+    try {
+      const workdir = await api.getJobWorkdir(job.id);
+      await api.revealInFolder(workdir);
+    } catch (err) {
+      toast.error('Не удалось открыть папку: ' + (err as Error).message);
+    } finally {
+      revealing = false;
+    }
+  }
+
+  async function saveJob() {
+    if (saving) return;
+    const destDir = await api.pickFolder('Куда сохранить копию задачи');
+    if (!destDir) return;
+    saving = true;
+    try {
+      const savedPath = await api.saveJob(job.id, destDir);
+      toast.success(`Сохранено: ${savedPath}`);
+    } catch (err) {
+      toast.error('Ошибка сохранения: ' + (err as Error).message);
+    } finally {
+      saving = false;
     }
   }
 
@@ -87,8 +108,13 @@
     {#if job.media?.durationSec}<span class="dim">{fmtDuration(job.media.durationSec)}</span>{/if}
     {#if createdDate}<span class="dim date">{createdDate}</span>{/if}
     {#if job.error}<span class="err" title={job.error}>{job.error.slice(0, 60)}</span>{/if}
-    {#if job.transcriptPath}
-      <span class="link" role="button" tabindex="0" onclick={openResult} onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); openResult(e); } }}>открыть</span>
+    {#if isTerminal}
+      <button class="action-btn" type="button" onclick={openJobFolder} disabled={revealing} title="Открыть папку с файлами задачи">
+        {revealing ? '…' : '📁 папка'}
+      </button>
+      <button class="action-btn save" type="button" onclick={saveJob} disabled={saving} title="Сохранить копию папки в выбранное место">
+        {saving ? '…' : '💾 сохранить'}
+      </button>
     {/if}
     {#if !isTerminal}
       <button class="cancel-btn" type="button" onclick={cancelJob} aria-label="Отменить задачу" title="Отменить">×</button>
@@ -140,4 +166,14 @@
   }
   .cancel-btn:hover { color: var(--err); background: var(--surface-3); }
   .cancel-btn:focus-visible { outline: 1px solid var(--err); }
+  .action-btn {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    cursor: pointer; padding: 1px 6px; font-size: 11px; line-height: 1.4;
+    border-radius: 3px; font-family: inherit;
+    transition: background 80ms, color 80ms;
+  }
+  .action-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--fg); }
+  .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .action-btn.save:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+  .action-btn:focus-visible { outline: 1px solid var(--accent); }
 </style>

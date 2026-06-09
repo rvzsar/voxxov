@@ -97,6 +97,8 @@ pub fn run() {
             commands::diagnose,
             commands::check_model_status,
             commands::download_model,
+            commands::save_job,
+            commands::get_job_workdir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

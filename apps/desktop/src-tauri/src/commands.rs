@@ -6,6 +6,7 @@ use crate::models::{self, ModelStatus};
 use crate::pipeline;
 use crate::state::AppState;
 use crate::types::{FileInfo, Job, JobId, JobSource, MediaInfo, SidecarStatus};
+use std::path::{Path, PathBuf};
 
 #[tauri::command]
 pub async fn enqueue_url(
@@ -93,7 +94,7 @@ const MEDIA_EXTENSIONS: &[&str] = &[
 
 #[tauri::command]
 pub async fn scan_folder(path: String) -> AppResult<Vec<FileInfo>> {
-    let dir = std::path::PathBuf::from(path.trim());
+    let dir = PathBuf::from(path.trim());
     let meta = tokio::fs::metadata(&dir)
         .await
         .map_err(|e| AppError::Other(format!("stat {}: {e}", dir.display())))?;
@@ -149,7 +150,7 @@ async fn scan_dir_recursive(dir: &std::path::Path, out: &mut Vec<FileInfo>) -> A
 pub fn check_model_status(model_dir: Option<String>) -> ModelStatus {
     let dir = model_dir
         .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from)
+        .map(PathBuf::from)
         .unwrap_or_else(models::default_model_dir);
     models::check_status(&dir)
 }
@@ -162,7 +163,7 @@ pub async fn download_model(
 ) -> AppResult<ModelStatus> {
     let dir = model_dir
         .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from)
+        .map(PathBuf::from)
         .unwrap_or_else(models::default_model_dir);
     let job_id_for_log = job_id.clone();
     state.log_line(&job_id, "model: starting download");
@@ -192,4 +193,67 @@ pub fn diagnose(_state: tauri::State<'_, AppState>) -> SidecarStatus {
         app_data: crate::paths::data_root(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
     }
+}
+
+// ===== Job folder: reveal / save =====
+
+/// Вернуть путь к папке конкретной задачи (`<data_root>/data/jobs/<job_id>/`).
+/// Используется UI чтобы показать "открыть папку" / "размер".
+#[tauri::command]
+pub fn get_job_workdir(job_id: String) -> AppResult<String> {
+    let dir = crate::paths::job_workdir(&job_id);
+    if !dir.is_dir() {
+        return Err(AppError::Other(format!(
+            "job folder not found: {}",
+            dir.display()
+        )));
+    }
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// Скопировать всю папку задачи (видео + аудио + txt/srt/json транскрипты)
+/// в `<dest_dir>/<job_id>/`. Возвращает путь к созданной папке.
+#[tauri::command]
+pub fn save_job(job_id: String, dest_dir: String) -> AppResult<String> {
+    let src = crate::paths::job_workdir(&job_id);
+    if !src.is_dir() {
+        return Err(AppError::Other(format!(
+            "job folder not found: {}",
+            src.display()
+        )));
+    }
+    let dest = PathBuf::from(dest_dir.trim());
+    if !dest.is_dir() {
+        return Err(AppError::Other(format!(
+            "destination is not a directory: {}",
+            dest.display()
+        )));
+    }
+    let target = dest.join(&job_id);
+    if target.exists() {
+        return Err(AppError::Other(format!(
+            "destination already exists: {} (удалить вручную или переименовать)",
+            target.display()
+        )));
+    }
+    copy_dir_recursive(&src, &target).map_err(|e| {
+        AppError::Other(format!("copy {} → {}: {e}", src.display(), target.display()))
+    })?;
+    Ok(target.to_string_lossy().to_string())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
 }

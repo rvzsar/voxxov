@@ -227,17 +227,13 @@ async fn run_inner(
     let text = transcription.text;
     let segments = transcription.segments;
 
-    // 5) Write outputs (txt/srt/json).
-    let out_dir = paths::transcripts_dir();
-    std::fs::create_dir_all(&out_dir)?;
-    let stem = if media.title.is_empty() {
-        media.id.clone()
-    } else {
-        sanitize(&media.title)
-    };
+    // 5) Write outputs (txt/srt/json) в ту же workdir, что и source/audio.
+    // Так все артефакты задачи лежат в одной папке — можно скопировать
+    // целиком через save_job.
+    std::fs::create_dir_all(&workdir)?;
     let mut last_path: Option<PathBuf> = None;
     for fmt in &cfg.output.formats {
-        let path = out_dir.join(format!("{stem}.{fmt}"));
+        let path = workdir.join(format!("transcript.{fmt}"));
         let body = match fmt.as_str() {
             "txt" => {
                 if segments.is_empty() {
@@ -262,7 +258,7 @@ async fn run_inner(
     }
 
     // Полный текст (без обрезки) — UI сам обрежет при показе.
-    Ok((last_path.unwrap_or(out_dir.join(format!("{stem}.txt"))), text))
+    Ok((last_path.unwrap_or(workdir.join("transcript.txt")), text))
 }
 
 fn stage_label(s: &JobStage) -> &'static str {
@@ -272,18 +268,6 @@ fn stage_label(s: &JobStage) -> &'static str {
         JobStage::Cancelled => "Отменено",
         _ => "",
     }
-}
-
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
-            c if c.is_control() => '_',
-            c => c,
-        })
-        .collect::<String>()
-        .trim()
-        .to_string()
 }
 
 fn text_to_srt_fallback(text: &str) -> String {
