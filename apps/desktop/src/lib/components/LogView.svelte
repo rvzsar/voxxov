@@ -81,7 +81,7 @@
     <div class="progress">
       <div class="pct">{Math.round((job.progress.pct || 0) * 100)}%</div>
       <div class="bar"><div class="fill" style="width: {((job.progress.pct || 0) * 100).toFixed(1)}%"></div></div>
-      <div class="lbl">{job.progress.label}</div>
+      <div class="lbl" title={job.progress.label}>{job.progress.label}</div>
     </div>
 
     {#if job.error}

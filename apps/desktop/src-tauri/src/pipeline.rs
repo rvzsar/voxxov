@@ -1,15 +1,16 @@
 //! Главный пайплайн: enqueue → metadata → download → audio → transcribe → done.
 
-use crate::asr::{self, TimedSegment};
+use crate::asr::{self, StageTimings, TimedSegment};
 use crate::config::AppConfig;
 use crate::error::{AppError, AppResult};
-use crate::ffmpeg::{FfmpegEvent, FfmpegRunner};
+use crate::ffmpeg::FfmpegRunner;
 use crate::models;
 use crate::paths;
 use crate::state::AppState;
 use crate::types::{Job, JobSource, JobStage, JobUpdate, MediaInfo, Progress};
 use chrono::Utc;
 use std::path::PathBuf;
+use std::time::Instant;
 
 async fn ensure_asr_model(state: &AppState, job_id: &str) -> AppResult<PathBuf> {
     // User-configured path имеет приоритет.
@@ -51,14 +52,14 @@ pub async fn run_job(state: AppState, cfg: AppConfig, job: Job) -> AppResult<()>
     let result = run_inner(&state, &cfg, &job, token.clone()).await;
 
     match result {
-        Ok((transcript_path, preview)) => {
+        Ok((transcript_path, preview, timings)) => {
             state.update_job(
                 &id,
                 JobUpdate {
                     stage: Some(JobStage::Done),
                     progress: Some(Progress {
                         pct: 1.0,
-                        label: "Готово".into(),
+                        label: timings.summary_ru(),
                         speed: None,
                         eta: None,
                     }),
@@ -112,7 +113,10 @@ async fn run_inner(
     cfg: &AppConfig,
     job: &Job,
     token: tokio_util::sync::CancellationToken,
-) -> AppResult<(PathBuf, String)> {
+) -> AppResult<(PathBuf, String, StageTimings)> {
+    let started = Instant::now();
+    let mut timings = StageTimings::default();
+
     let ffmpeg = FfmpegRunner::resolve(None)?;
 
     let workdir = paths::job_workdir(&job.id);
@@ -150,7 +154,9 @@ async fn run_inner(
         (media, path)
     } else {
         state.set_stage(&job.id, JobStage::FetchingMetadata, "Получаем метаданные…");
+        let t = Instant::now();
         let media = crate::ytdlp::YtDlpRunner::fetch_metadata(&job.url).await?;
+        timings.metadata_sec = Some(t.elapsed().as_secs_f32());
         state.update_job(
             &job.id,
             JobUpdate {
@@ -165,10 +171,12 @@ async fn run_inner(
             },
         );
         state.set_stage(&job.id, JobStage::Downloading, "Скачиваем видео…");
+        let t = Instant::now();
         let downloaded = crate::ytdlp::YtDlpRunner::download(
             &state, &job.id, &job.url, &workdir, cfg, token.clone(),
         )
         .await?;
+        timings.download_sec = Some(t.elapsed().as_secs_f32());
         (media, downloaded)
     };
 
@@ -185,36 +193,32 @@ async fn run_inner(
         let sr = cfg.asr.sample_rate;
         let st2 = state.clone();
         let id2 = job.id.clone();
+        let t = Instant::now();
         ffmpeg
             .extract_audio(
                 &in_p,
                 &out_p,
                 sr,
-                true,
-                media.duration_sec.map(|d| d as f32),
                 token.clone(),
-                move |event| match event {
-                    FfmpegEvent::Log(line) => st2.log_line(&id2, format!("ffmpeg: {line}")),
-                    FfmpegEvent::Progress(pct) => st2.update_job(
-                        &id2,
-                        JobUpdate {
-                            progress: Some(Progress {
-                                pct,
-                                label: "Извлекаем аудио…".into(),
-                                speed: None,
-                                eta: None,
-                            }),
-                            ..Default::default()
-                        },
-                    ),
-                },
+                move |line| st2.log_line(&id2, format!("ffmpeg: {line}")),
             )
             .await?;
+        timings.extract_sec = t.elapsed().as_secs_f32();
     }
 
     // 4) Transcribe.
     state.set_stage(&job.id, JobStage::Transcribing, "Распознаём речь…");
     let model_path = ensure_asr_model(&state, &job.id).await?;
+    // Acquire ASR permit (cancellable). При приоритете CPU — только один
+    // ASR-декод за раз, остальные ждут в FIFO-очереди.
+    let _permit = match tokio::select! {
+        res = state.asr_permits.acquire() => res,
+        _ = token.cancelled() => return Err(AppError::Cancelled),
+    } {
+        Ok(p) => p,
+        Err(e) => return Err(AppError::Asr(format!("asr semaphore closed: {e}"))),
+    };
+    let t = Instant::now();
     let transcription = asr::transcribe(
         &state.clone(),
         &job.id,
@@ -224,6 +228,7 @@ async fn run_inner(
         token.clone(),
     )
     .await?;
+    timings.transcribe_sec = t.elapsed().as_secs_f32();
     let text = transcription.text;
     let segments = transcription.segments;
 
@@ -258,7 +263,15 @@ async fn run_inner(
     }
 
     // Полный текст (без обрезки) — UI сам обрежет при показе.
-    Ok((last_path.unwrap_or(workdir.join("transcript.txt")), text))
+
+    timings.total_sec = started.elapsed().as_secs_f32();
+    // Per-stage timings в <workdir>/bench.json. Пишем best-effort:
+    // ошибка сериализации/I-O не должна ломать успешный job.
+    if let Ok(json) = serde_json::to_vec_pretty(&timings) {
+        let _ = std::fs::write(workdir.join("bench.json"), json);
+    }
+
+    Ok((last_path.unwrap_or(workdir.join("transcript.txt")), text, timings))
 }
 
 fn stage_label(s: &JobStage) -> &'static str {

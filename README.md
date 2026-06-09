@@ -1,147 +1,99 @@
 # GigaAM Desktop
 
-Десктопное приложение для скачивания видео (yt-dlp) и распознавания русской речи
-([GigaAM V3](https://github.com/salute-developers/GigaAM)) с поддержкой прокси,
-конфигурируемого пайплайна и удобного Svelte-UI.
+Desktop application for video downloading (yt-dlp) and Russian speech recognition using [GigaAM-V3](https://github.com/salute-developers/GigaAM).
 
-## Стек
+Written in Rust (Tauri 2) + Svelte 5. Portable — all data lives next to the executable.
 
-- **Tauri 2.x** — нативный десктоп (Windows / Linux / macOS).
-- **Rust** — оркестрация, скачивание, ffmpeg-обвязка, ASR.
-- **Svelte 5** (runes) + **Vite** + **TypeScript** — UI.
-- **yt-dlp** + **ffmpeg** — внешние sidecar-бинари.
-- **GigaAM v3** — нативный Rust-инференс через ONNX Runtime (`ort` crate).
+Русская версия: [README.ru.md](./README.ru.md).
 
-## Железо (target)
+## Pipeline
 
-- Intel Core Ultra 5 125U (12 ядер, AVX-VNNI, NPU Intel AI Boost).
-- Инференс: GigaAM v3 (`v3_e2e_ctc` или `v3_rnnt`).
+URL or local file → yt-dlp → ffmpeg (16 kHz mono WAV) → GigaAM RNN-T (sherpa-onnx) → TXT / SRT / JSON
 
-## Структура
-
-```
-.
-├── apps/desktop/           # Tauri-приложение (Rust + Svelte)
-│   ├── src/                # Svelte 5 фронт
-│   │   ├── lib/components/ # URL-input, JobList, Settings, LogView, ...
-│   │   └── lib/stores/     # jobs.svelte.ts (rune-стор)
-│   └── src-tauri/          # Rust-бэкенд
-│       ├── src/            # modules: config, pipeline, ytdlp, ffmpeg, asr, ...
-│       └── tauri.conf.json
-├── scripts/                # install-sidecars.ps1, dev.cmd
-├── models/                 # сюда кладутся ONNX-модели GigaAM
-└── .github/workflows/      # CI/CD
-```
-
-## Структура (portable)
-
-Все мутабельные данные лежат **рядом с .exe**. Можно копировать всю папку
-на USB, запускать с любого диска, не оставлять следов в системе.
-
-```
-GigaAM Desktop/                ← можно назвать как угодно
-├── gigaam-desktop.exe
-├── data/
-│   ├── config.toml
-│   ├── logs/app.log
-│   ├── cache/
-│   ├── downloads/              ← временные скачивания yt-dlp
-│   ├── jobs/<job_id>/          ← промежуточные WAV
-│   └── transcripts/<title>.{txt,srt,json}
-├── models/                     ← сюда скачаются 4 файла GigaAM при первом запуске
-│   ├── gigaam_v3_e2e_rnnt_encoder_int8.onnx
-│   ├── gigaam_v3_e2e_rnnt_decoder.onnx
-│   ├── gigaam_v3_e2e_rnnt_joint.onnx
-│   └── gigaam_v3_e2e_rnnt_tokens.txt
-└── bin/                        ← yt-dlp + ffmpeg (тоже авто-скачивание)
-    ├── yt-dlp.exe
-    └── ffmpeg.exe
-```
-
-**Override через env var** `GIGAAM_DATA_DIR=...` — если хочется вынести
-данные на RAM-диск или на другой диск (но оставить .exe на месте).
-
-**Если .exe в read-only месте** (например, `C:\Program Files\`) — приложение
-упадёт при старте с понятной ошибкой. Решения: перенести .exe в
-пишущуюся папку, или задать `GIGAAM_DATA_DIR`.
+- Parallel download/ffmpeg stages; single ASR decoder at a time (CPU-serialized via semaphore)
+- Cancellation at any stage
+- SOCKS5 / HTTP(S) proxy with user/pass and no-proxy list
+- ASR devices: CPU / CUDA / DirectML / OpenVINO
+- Beam search (1..64), greedy fallback
+- `cmd:` prefix in `modelDir` — delegate ASR to external CLI
+- Auto-downloads yt-dlp, ffmpeg, and GigaAM model files on first launch
 
 ## Quick Start
 
-1. Запустить dev-режим (yt-dlp + ffmpeg + модель GigaAM скачаются
-   автоматически при первом запуске — в `<exe_dir>/bin/` и
-   `<exe_dir>/models/` соответственно):
+```cmd
+scripts\dev.cmd
+```
 
-    ```cmd
-    scripts\dev.cmd
-    ```
+Auto-downloads:
+- `yt-dlp.exe`, `ffmpeg.exe` → `<exe_dir>/bin/`
+- 4 GigaAM-V3 RNN-T files (~320 MB) → `<exe_dir>/models/`
 
-2. Запустить распознавание. Папку с моделью можно указать в `Settings → ASR`
-   (пусто = авто-скачивание в `<exe_dir>/models`).
+If the executable lives in a read-only location, the app panics at startup with a clear error.
 
-## Sidecars
+## Configuration
 
-yt-dlp и ffmpeg **не поставляются в бинарь** приложения и не требуют
-ручной установки. Крейт `yt-dlp` (GPL-3.0) скачивает их сам при первом
-использовании и кладёт в `<exe_dir>/bin/`.
-
-Если нужно указать другой путь (например, системный yt-dlp) — создайте
-`bin/yt-dlp[.exe]` и `bin/ffmpeg[.exe]` в нужной директории до запуска.
-
-## Конфигурация
-
-Файл: `<exe_dir>/data/config.toml` (рядом с .exe, см. «Структура» выше).
+`<exe_dir>/data/config.toml` — all sections optional, defaults applied if the file or any section is missing.
 
 ```toml
 [proxy]
 kind = "socks5"        # none | http | https | socks5
 host = "127.0.0.1"
 port = 1080
+noProxy = "localhost,127.0.0.1"
 
 [download]
 format = "bv*+ba/b"
-max_height = 1080
-concurrent_fragments = 4
-custom_ytdlp_path = "" # пусто → автодетект
-custom_ffmpeg_path = ""
+maxHeight = 1080       # 0 = no limit
+audioOnly = false
+concurrentFragments = 4
+retries = 3
+cookieFile = ""
+userAgent = ""
 
 [asr]
-# Пусто = авто-скачивание в <exe_dir>/models. Иначе — путь к папке с
-# 4 файлами: encoder/decoder/joiner.onnx + tokens.txt.
-model_dir = ""
-sample_rate = 16000
+modelDir = ""          # empty = auto-download; "cmd:..." = external CLI
+sampleRate = 16000
 language = "ru"
+device = "cpu"         # cpu | cuda | directml | openvino
+beamSize = 5
 
 [output]
-dir = ""               # пусто → <exe_dir>/data/transcripts
+dir = ""
 formats = ["txt", "srt", "json"]
 
 [logging]
-level = "info"
+level = "info"         # error | warn | info | debug | trace
 file = true
+maxSizeMb = 5
+keepFiles = 3
 ```
 
-## Пайплайн
+## Layout
 
 ```
-URL → yt-dlp (download) → ffmpeg (16kHz mono WAV + loudnorm) → GigaAM (ASR) → txt/srt/json
+GigaAM Desktop/
+├── gigaam-desktop.exe
+├── data/             # config.toml, logs/, jobs/<id>/, transcripts/
+├── models/           # auto-downloaded GigaAM-V3
+└── bin/              # auto-downloaded yt-dlp, ffmpeg
 ```
 
-Все стадии и подробные логи приходят во frontend через Tauri-событие `job:event`.
+## Build
 
-## Поддерживаемые прокси
+- Dev: `scripts\dev.cmd` (Windows)
+- Release: GitHub Actions only (`release.yml`)
 
-`none | http | https | socks5` (с user/password и `no_proxy`-списком).
+## License
 
-## Лицензия моделей
+**GPL-3.0-only** — see [LICENSE](./LICENSE).
 
-GigaAM-V3 распространяется под **GigaAM License (non-commercial)**.
-Для коммерческого использования требуется отдельное соглашение с правообладателем (Salute).
+GigaAM model files are downloaded from [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite) releases. The GigaAM model itself is developed by [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) under a **non-commercial license** — commercial use requires a separate agreement with the rights holder.
 
-## Лицензия кода
+## Credits
 
-**GPL-3.0-only** — см. [LICENSE](./LICENSE).
-
-Использование крейта `yt-dlp` ([boul2gom/yt-dlp](https://github.com/boul2gom/yt-dlp))
-также под GPL-3.0, поэтому весь проект — GPL-3.0.
-
-Salute GigaAM модели — non-commercial (см. выше).
+- [GigaAM](https://github.com/salute-developers/GigaAM) — speech recognition model, Salute Developers (Sber)
+- [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite) — GigaAM-V3 model file packaging and release hosting
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (csukuangfj) — ONNX runtime, static-linked C library for ASR inference (Apache-2.0)
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — video downloader (Unlicense)
+- [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) — ffmpeg Windows binaries (GPL)
+- [Tauri](https://github.com/tauri-apps/tauri) — desktop application framework (Apache-2.0 / MIT)

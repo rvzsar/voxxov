@@ -5,10 +5,12 @@
 
 use crate::config::AppConfig;
 use crate::types::{BackendEvent, Job, JobId, JobStage, JobUpdate, Progress};
+use chrono::Utc;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 const CHANNEL_CAPACITY: usize = 512;
@@ -19,16 +21,21 @@ pub struct AppState {
     pub cancel_tokens: Arc<RwLock<HashMap<JobId, CancellationToken>>>,
     pub config: Arc<RwLock<AppConfig>>,
     pub events: broadcast::Sender<BackendEvent>,
+    /// Глобальный permit-pool для ASR-стадии. При приоритете CPU — только
+    /// один ASR-декод за раз, иначе over-subscription и cache thrashing.
+    pub asr_permits: Arc<Semaphore>,
 }
 
 impl AppState {
     pub fn new(config: AppConfig) -> Self {
         let (tx, _rx) = broadcast::channel(CHANNEL_CAPACITY);
+        let jobs = Self::load_jobs().unwrap_or_default();
         Self {
-            jobs: Arc::new(RwLock::new(HashMap::new())),
+            jobs: Arc::new(RwLock::new(jobs)),
             cancel_tokens: Arc::new(RwLock::new(HashMap::new())),
             config: Arc::new(RwLock::new(config)),
             events: tx,
+            asr_permits: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -42,23 +49,36 @@ impl AppState {
 
     pub fn insert_job(&self, job: Job) {
         let id = job.id.clone();
-        self.jobs.write().insert(id.clone(), job.clone());
+        self.jobs.write().insert(id, job.clone());
         let _ = self
             .events
             .send(BackendEvent::JobCreated { job: Box::new(job) });
+        self.save_jobs();
     }
 
     /// Применить `update` и разослать событие. Нет задачи — warning.
+    /// Сохраняет в `data/jobs.json` только при переходе в терминальное
+    /// состояние (Done/Failed/Cancelled) — иначе слишком много I/O на
+    /// progress-апдейтах.
     pub fn update_job(&self, id: &str, update: JobUpdate) {
-        let mut jobs = self.jobs.write();
-        if let Some(j) = jobs.get_mut(id) {
-            apply_update(j, &update);
-            let _ = self
-                .events
-                .send(BackendEvent::JobUpdated { id: id.to_string(), update });
-        } else {
-            drop(jobs);
-            tracing::warn!("update_job: job {id} not found");
+        let needs_save;
+        {
+            let mut jobs = self.jobs.write();
+            if let Some(j) = jobs.get_mut(id) {
+                let was_terminal = is_terminal(j.stage);
+                apply_update(j, &update);
+                let now_terminal = is_terminal(j.stage);
+                let _ = self
+                    .events
+                    .send(BackendEvent::JobUpdated { id: id.to_string(), update });
+                needs_save = !was_terminal && now_terminal;
+            } else {
+                tracing::warn!("update_job: job {id} not found");
+                return;
+            }
+        }
+        if needs_save {
+            self.save_jobs();
         }
     }
 
@@ -126,6 +146,48 @@ impl AppState {
         }
     }
 
+    // ---------------- persistence ----------------
+
+    /// Загрузить все jobs из `data/jobs.json`. Отсутствие файла = пустая карта.
+    /// In-progress задачи, оставшиеся от предыдущего запуска (краш/закрытие),
+    /// помечаются как `Failed` — иначе UI зависнет на "transcribing" навсегда.
+    fn load_jobs() -> Option<HashMap<JobId, Job>> {
+        let path = jobs_file_path();
+        let bytes = std::fs::read(&path).ok()?;
+        let mut jobs: Vec<Job> = match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("jobs.json: parse failed, starting empty: {e}");
+                return None;
+            }
+        };
+        for j in &mut jobs {
+            if !is_terminal(j.stage) {
+                j.stage = JobStage::Failed;
+                j.error = Some("interrupted by app restart".into());
+                j.finished_at = Some(Utc::now().to_rfc3339());
+            }
+        }
+        Some(jobs.into_iter().map(|j| (j.id.clone(), j)).collect())
+    }
+
+    /// Сохранить все jobs в `data/jobs.json` (atomic write через tmp+rename).
+    /// Best-effort: ошибка I/O не должна ломать runtime.
+    fn save_jobs(&self) {
+        let path = jobs_file_path();
+        let jobs: Vec<Job> = self.jobs.read().values().cloned().collect();
+        let json = match serde_json::to_vec_pretty(&jobs) {
+            Ok(j) => j,
+            Err(e) => { tracing::warn!("jobs.json: serialize failed: {e}"); return; }
+        };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, &json).is_err() { return; }
+        let _ = std::fs::rename(&tmp, &path);
+    }
+
     // ---------------- config ----------------
 
     pub fn config(&self) -> AppConfig {
@@ -135,6 +197,14 @@ impl AppState {
     pub fn set_config(&self, cfg: AppConfig) {
         *self.config.write() = cfg;
     }
+}
+
+fn is_terminal(stage: JobStage) -> bool {
+    matches!(stage, JobStage::Done | JobStage::Failed | JobStage::Cancelled)
+}
+
+fn jobs_file_path() -> PathBuf {
+    crate::paths::data_root().join("data").join("jobs.json")
 }
 
 fn apply_update(j: &mut Job, u: &JobUpdate) {
