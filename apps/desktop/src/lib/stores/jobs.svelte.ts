@@ -61,8 +61,7 @@ class JobsStore {
           j.id === ev.id
             ? {
                 ...j,
-                stage: "done",
-                progress: { pct: 1, label: "Готово" },
+                // НЕ перетираем progress — он уже содержит benchmark-label из job:updated.
                 transcriptPath: ev.transcriptPath,
                 transcriptPreview: ev.preview,
                 finishedAt: new Date().toISOString(),

@@ -7,12 +7,14 @@ use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 pub async fn transcribe_cmd(
     state: &AppState,
     job_id: &str,
     audio: &Path,
     cmd_str: &str,
+    cancel: CancellationToken,
 ) -> AppResult<Transcription> {
     let mut tokens = shell_split(cmd_str);
     let program = tokens.remove(0);
@@ -24,25 +26,56 @@ pub async fn transcribe_cmd(
     cmd.args(&tokens);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| AppError::Asr(format!("spawn {program}: {e}")))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| AppError::Asr(format!("spawn {program}: {e}")))?;
 
-    let stderr = child.stderr.take().unwrap();
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::Asr("no stderr".into()))?;
     let st = state.clone();
     let jid = job_id.to_string();
-    tokio::spawn(async move {
+    let drain_task = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             st.log_line(&jid, format!("asr: {line}"));
         }
     });
 
-    let mut stdout = child.stdout.take().unwrap();
-    let mut buf = String::new();
-    stdout.read_to_string(&mut buf).await.ok();
+    // stdout read в отдельной таске — чтобы tokio::select! мог отменить и
+    // stdout-чтение, и wait на child одновременно.
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::Asr("no stdout".into()))?;
+    let read_task = tokio::spawn(async move {
+        let mut buf = String::new();
+        let _ = stdout.read_to_string(&mut buf).await;
+        buf
+    });
 
-    let status = child.wait().await.map_err(|e| AppError::Asr(format!("wait: {e}")))?;
+    let status = tokio::select! {
+        res = child.wait() => res.map_err(|e| AppError::Asr(format!("wait: {e}"))),
+        _ = cancel.cancelled() => {
+            let _ = child.start_kill();
+            drain_task.abort();
+            read_task.abort();
+            return Err(AppError::Cancelled);
+        }
+    }?;
+
+    // Child вышел → stdout pipe закрыт → read_task досчитает мгновенно.
+    let buf = read_task
+        .await
+        .map_err(|e| AppError::Asr(format!("stdout join: {e}")))?;
+
     if !status.success() {
-        return Err(AppError::Asr(format!("exit {:?}: {}", status.code(), buf)));
+        return Err(AppError::Asr(format!(
+            "exit {:?}: {}",
+            status.code(),
+            buf
+        )));
     }
 
     let text = parse_text(&buf).ok_or_else(|| AppError::Asr("no text in output".into()))?;

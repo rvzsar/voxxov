@@ -46,7 +46,7 @@ pub async fn transcribe(
 
     // cmd: prefix — fallback to external CLI.
     if let Some(cmd) = cfg.model_dir.strip_prefix("cmd:") {
-        return super::cmd_fallback::transcribe_cmd(state, job_id, audio, cmd).await;
+        return super::cmd_fallback::transcribe_cmd(state, job_id, audio, cmd, cancel).await;
     }
 
     // Discover model files.
