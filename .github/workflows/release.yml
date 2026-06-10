@@ -41,8 +41,8 @@ jobs:
 
       # `--no-bundle` → single portable .exe (no NSIS/MSI installer).
       # `+crt-static` from .cargo/config.toml → no VC++ Redist needed.
-      # No tagName here: tauri-action only builds; softprops below
-      # creates the release and attaches the .exe.
+      # tauri-action only builds; softprops below creates the release
+      # and attaches the artifacts.
       - name: Build portable .exe
         uses: tauri-apps/tauri-action@v0
         env:
@@ -51,19 +51,67 @@ jobs:
           projectPath: apps/desktop
           args: --target x86_64-pc-windows-msvc --no-bundle
 
-      - name: Create release and upload .exe
+      # Stage release artifacts (versioned name + README + SHA256 checksums).
+      # Output of this step is uploaded by the next step as release assets.
+      - name: Stage release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE_DIR="release-stage"
+          rm -rf "${STAGE_DIR}"
+          mkdir -p "${STAGE_DIR}"
+
+          EXE_NAME="voxxov-${GITHUB_REF_NAME}-windows-x86_64.exe"
+          cp target/x86_64-pc-windows-msvc/release/voxxov.exe "${STAGE_DIR}/${EXE_NAME}"
+
+          cat > "${STAGE_DIR}/README.txt" <<EOF
+          Voxxov ${GITHUB_REF_NAME} — Windows x86_64 portable
+
+          Single-file portable build. No installer, no admin required.
+          Copy to any writable folder and run.
+
+          Requirements
+            - Windows 10 / 11
+            - WebView2 Runtime (preinstalled on Windows 11; on Windows 10
+              install from https://developer.microsoft.com/microsoft-edge/webview2/)
+            - No Visual C++ Redistributable required (statically linked CRT)
+
+          Auto-created layout next to the .exe
+            data/config.toml     settings
+            data/logs/app.log    log file (rotating)
+            data/jobs/<uuid>/    per-task workdir
+            data/transcripts/    final transcripts (if [output].dir empty)
+            models/              auto-downloaded GigaAM-V3 (4 files, ~330 MB)
+            bin/                 auto-downloaded yt-dlp, ffmpeg
+
+          On first run, the ASR model is downloaded to ./models/ and yt-dlp
+          / ffmpeg to ./bin/. Subsequent runs are offline.
+          EOF
+
+          cd "${STAGE_DIR}"
+          sha256sum "${EXE_NAME}" README.txt > SHA256SUMS.txt
+          echo "staged:"
+          ls -la
+
+      - name: Create release and upload artifacts
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: Voxxov ${{ github.ref_name }}
           body: |
-            Portable Windows build.
+            Portable Windows build (x86_64).
 
-            - Single .exe, no installer
+            - Single .exe, no installer, no admin
             - Requires WebView2 Runtime (preinstalled on Windows 11; on
               Windows 10 install from https://developer.microsoft.com/microsoft-edge/webview2/)
             - No Visual C++ Redistributable required
+            - SHA256 checksums in `SHA256SUMS.txt` (verify with `sha256sum -c SHA256SUMS.txt`)
+
+            See `README.txt` for layout and requirements.
           draft: true
           prerelease: false
-          files: target/x86_64-pc-windows-msvc/release/voxxov.exe
+          files: |
+            release-stage/voxxov-${{ github.ref_name }}-windows-x86_64.exe
+            release-stage/README.txt
+            release-stage/SHA256SUMS.txt
           fail_on_unmatched_files: true
