@@ -135,13 +135,77 @@ pub async fn transcribe(
                 )
             })?;
 
-            let stream = recognizer.create_stream();
-            stream.accept_waveform(sample_rate, samples);
-            recognizer.decode(&stream);
-            // recognizer и stream дропаются здесь — больше не нужны.
-            stream
-                .get_result()
-                .ok_or_else(|| AppError::Asr("decode returned no result".into()))
+            // Модель имеет max_seq_len ≈ 5000 в positional encoding. Наш
+            // `modelType = "nemo_transducer"` по какой-то причине не включает
+            // fbank-экстракцию в Rust-биндинге (модель всё ещё получает raw samples
+            // и падает на 5000 × N broadcasting). Чанк ≤4000 samples безопасен в
+            // обоих случаях — и с downsampling, и без. Каждый чанк — отдельный
+            // decode, результаты конкатенируются с корректировкой timestamps.
+            // 74 мин аудио → 17850 чанков (медленно, но работает; в проде можно
+            // поднять до 50_000 если fbank всё-таки заработает).
+            const CHUNK_SAMPLES: usize = 4_000;
+            let total = samples.len();
+            let mut all_text = String::new();
+            let mut all_tokens: Vec<String> = Vec::new();
+            let mut all_timestamps: Vec<f32> = Vec::new();
+            let mut all_durations: Vec<f32> = Vec::new();
+
+            for chunk_start in (0..total).step_by(CHUNK_SAMPLES) {
+                if cancel.is_cancelled() {
+                    return Err(AppError::Cancelled);
+                }
+                let chunk_end = (chunk_start + CHUNK_SAMPLES).min(total);
+                let chunk = &samples[chunk_start..chunk_end];
+
+                let stream = recognizer.create_stream();
+                stream.accept_waveform(sample_rate, chunk);
+                recognizer.decode(&stream);
+
+                let r = stream
+                    .get_result()
+                    .ok_or_else(|| AppError::Asr("decode returned no result".into()))?;
+
+                let chunk_offset_sec = chunk_start as f32 / sample_rate as f32;
+                let chunk_text = r.text.trim();
+                if !chunk_text.is_empty() {
+                    if !all_text.is_empty() {
+                        all_text.push(' ');
+                    }
+                    all_text.push_str(chunk_text);
+                }
+                all_tokens.extend(r.tokens);
+                if let Some(ts) = r.timestamps {
+                    all_timestamps.extend(ts.iter().map(|&t| t + chunk_offset_sec));
+                }
+                if let Some(durs) = r.durations {
+                    all_durations.extend(durs);
+                }
+            }
+
+            tracing::info!(
+                "ASR: decoded {} chunks (≤{} samples) from {} samples",
+                (total + CHUNK_SAMPLES - 1) / CHUNK_SAMPLES,
+                CHUNK_SAMPLES,
+                total
+            );
+
+            // Собираем комбинированный OfflineRecognizerResult. Поля pub —
+            // конструкция извне разрешена. Дальше post-processing такой же как
+            // раньше (group_into_segments + log).
+            let result = sherpa_onnx::OfflineRecognizerResult {
+                text: all_text,
+                tokens: all_tokens,
+                timestamps: if all_timestamps.is_empty() {
+                    None
+                } else {
+                    Some(all_timestamps)
+                },
+                durations: if all_durations.is_empty() {
+                    None
+                } else {
+                    Some(all_durations)
+                },
+            }
         })
         .await
         .map_err(|e| AppError::Asr(format!("asr join: {e}")))??;
