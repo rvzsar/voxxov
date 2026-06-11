@@ -89,6 +89,18 @@ pub async fn transcribe(
             return Err(AppError::Asr("no audio samples".into()));
         }
         let sample_rate = wave.sample_rate();
+        // Диагностика: что реально получает sherpa-onnx. Если в логе видно
+        // samples.len() / sample_rate ≈ длительности файла, а не ~100×короче
+        // (что соответствовало бы fbank frames), значит энкодер получает raw
+        // samples вместо фичей и упрётся в max_seq_len (типично 5000 для
+        // Conformer positional encoding).
+        tracing::info!(
+            "ASR: {} samples @ {}Hz ({:.1}s) from {}",
+            samples.len(),
+            sample_rate,
+            samples.len() as f32 / sample_rate as f32,
+            audio_path.display()
+        );
 
         let mut config = OfflineRecognizerConfig::default();
         config.model_config.transducer = OfflineTransducerModelConfig {
@@ -99,6 +111,12 @@ pub async fn transcribe(
         config.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
         config.model_config.num_threads = num_threads as i32;
         config.model_config.provider = Some(provider.to_string());
+        // GigaAM-V3 RNN-T обучен на 80-мерных fbank-фичах с 25ms окном /
+        // 10ms шагом. Заставляем sherpa-onnx явно делать fbank-экстракцию;
+        // иначе энкодер может получить raw samples и упасть на positional
+        // encoding с broadcasting error (5000 × N).
+        config.feat_config.sample_rate = sample_rate;
+        config.feat_config.feature_dim = 80;
 
         // beam > 1 → modified_beam_search; beam == 1 → дефолт (greedy_search) из C-стороны.
         let beam = beam_size.clamp(1, 64);
