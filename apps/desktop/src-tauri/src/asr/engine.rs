@@ -15,9 +15,7 @@ use super::Transcription;
 use crate::config::AsrConfig;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
-use sherpa_onnx::{
-    OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig,
-};
+use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
@@ -81,64 +79,72 @@ pub async fn transcribe(
 
     // WAV-чтение + создание recognizer + decode — всё sync, в blocking pool.
     let audio_path = audio.to_path_buf();
-    let result = tokio::task::spawn_blocking(move || -> AppResult<sherpa_onnx::OfflineRecognizerResult> {
-        let wave = sherpa_onnx::Wave::read(&audio_path.to_string_lossy())
-            .ok_or_else(|| AppError::Asr(format!("read wav {}: failed", audio_path.display())))?;
-        let samples = wave.samples();
-        if samples.is_empty() {
-            return Err(AppError::Asr("no audio samples".into()));
-        }
-        let sample_rate = wave.sample_rate();
-        // Диагностика: что реально получает sherpa-onnx. Если в логе видно
-        // samples.len() / sample_rate ≈ длительности файла, а не ~100×короче
-        // (что соответствовало бы fbank frames), значит энкодер получает raw
-        // samples вместо фичей и упрётся в max_seq_len (типично 5000 для
-        // Conformer positional encoding).
-        tracing::info!(
-            "ASR: {} samples @ {}Hz ({:.1}s) from {}",
-            samples.len(),
-            sample_rate,
-            samples.len() as f32 / sample_rate as f32,
-            audio_path.display()
-        );
+    let result =
+        tokio::task::spawn_blocking(move || -> AppResult<sherpa_onnx::OfflineRecognizerResult> {
+            let wave = sherpa_onnx::Wave::read(&audio_path.to_string_lossy()).ok_or_else(|| {
+                AppError::Asr(format!("read wav {}: failed", audio_path.display()))
+            })?;
+            let samples = wave.samples();
+            if samples.is_empty() {
+                return Err(AppError::Asr("no audio samples".into()));
+            }
+            let sample_rate = wave.sample_rate();
+            // Диагностика: что реально получает sherpa-onnx. Если в логе видно
+            // samples.len() / sample_rate ≈ длительности файла, а не ~100×короче
+            // (что соответствовало бы fbank frames), значит энкодер получает raw
+            // samples вместо фичей и упрётся в max_seq_len (типично 5000 для
+            // Conformer positional encoding).
+            tracing::info!(
+                "ASR: {} samples @ {}Hz ({:.1}s) from {}",
+                samples.len(),
+                sample_rate,
+                samples.len() as f32 / sample_rate as f32,
+                audio_path.display()
+            );
 
-        let mut config = OfflineRecognizerConfig::default();
-        config.model_config.transducer = OfflineTransducerModelConfig {
-            encoder: Some(encoder.to_string_lossy().into_owned()),
-            decoder: Some(decoder.to_string_lossy().into_owned()),
-            joiner: Some(joiner.to_string_lossy().into_owned()),
-        };
-        config.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
-        config.model_config.num_threads = num_threads as i32;
-        config.model_config.provider = Some(provider.to_string());
-        // GigaAM-V3 RNN-T обучен на 80-мерных fbank-фичах с 25ms окном /
-        // 10ms шагом. Заставляем sherpa-onnx явно делать fbank-экстракцию;
-        // иначе энкодер может получить raw samples и упасть на positional
-        // encoding с broadcasting error (5000 × N).
-        config.feat_config.sample_rate = sample_rate;
-        config.feat_config.feature_dim = 80;
+            let mut config = OfflineRecognizerConfig::default();
+            config.model_config.transducer = OfflineTransducerModelConfig {
+                encoder: Some(encoder.to_string_lossy().into_owned()),
+                decoder: Some(decoder.to_string_lossy().into_owned()),
+                joiner: Some(joiner.to_string_lossy().into_owned()),
+            };
+            config.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
+            config.model_config.num_threads = num_threads as i32;
+            config.model_config.provider = Some(provider.to_string());
+            // GigaAM-V3 — это NeMo-стиль transducer (закодирован в репо
+            // amidexe/govorun-lite, который ипользует sherpa-onnx 1.13). Без
+            // этого поля sherpa-onnx не знает что это NeMo и подаёт raw samples
+            // в энкодер, который рассчитан на fbank-фичи → broadcasting
+            // error 5000 × N. См. также `feat_config` ниже.
+            config.model_config.model_type = Some("nemo_transducer".to_string());
+            // GigaAM-V3 RNN-T обучен на 80-мерных fbank-фичах с 25ms окном /
+            // 10ms шагом. Задаём явно на случай, если дефолты отличаются.
+            config.feat_config.sample_rate = sample_rate;
+            config.feat_config.feature_dim = 80;
 
-        // beam > 1 → modified_beam_search; beam == 1 → дефолт (greedy_search) из C-стороны.
-        let beam = beam_size.clamp(1, 64);
-        if beam > 1 {
-            config.decoding_method = Some("modified_beam_search".to_string());
-            config.max_active_paths = beam as i32;
-        }
+            // beam > 1 → modified_beam_search; beam == 1 → дефолт (greedy_search) из C-стороны.
+            let beam = beam_size.clamp(1, 64);
+            if beam > 1 {
+                config.decoding_method = Some("modified_beam_search".to_string());
+                config.max_active_paths = beam as i32;
+            }
 
-        let recognizer = OfflineRecognizer::create(&config).ok_or_else(|| {
-            AppError::Asr("failed to create OfflineRecognizer — check model paths and provider".into())
-        })?;
+            let recognizer = OfflineRecognizer::create(&config).ok_or_else(|| {
+                AppError::Asr(
+                    "failed to create OfflineRecognizer — check model paths and provider".into(),
+                )
+            })?;
 
-        let stream = recognizer.create_stream();
-        stream.accept_waveform(sample_rate, samples);
-        recognizer.decode(&stream);
-        // recognizer и stream дропаются здесь — больше не нужны.
-        stream
-            .get_result()
-            .ok_or_else(|| AppError::Asr("decode returned no result".into()))
-    })
-    .await
-    .map_err(|e| AppError::Asr(format!("asr join: {e}")))??;
+            let stream = recognizer.create_stream();
+            stream.accept_waveform(sample_rate, samples);
+            recognizer.decode(&stream);
+            // recognizer и stream дропаются здесь — больше не нужны.
+            stream
+                .get_result()
+                .ok_or_else(|| AppError::Asr("decode returned no result".into()))
+        })
+        .await
+        .map_err(|e| AppError::Asr(format!("asr join: {e}")))??;
 
     let tokens = result.tokens;
     let timestamps = result.timestamps;
@@ -158,7 +164,13 @@ pub async fn transcribe(
         ),
     );
 
-    let segments = group_into_segments(&tokens, timestamps.as_deref(), durations.as_deref(), 0.0, duration_sec);
+    let segments = group_into_segments(
+        &tokens,
+        timestamps.as_deref(),
+        durations.as_deref(),
+        0.0,
+        duration_sec,
+    );
     Ok(Transcription {
         text: result.text.trim().to_string(),
         segments,
@@ -168,9 +180,7 @@ pub async fn transcribe(
 // --- helpers ---
 
 /// Найти encoder/decoder/joiner/tokens в `model_dir` (должна быть директорией).
-pub fn discover_model_files(
-    model_dir: &str,
-) -> AppResult<(PathBuf, PathBuf, PathBuf, PathBuf)> {
+pub fn discover_model_files(model_dir: &str) -> AppResult<(PathBuf, PathBuf, PathBuf, PathBuf)> {
     let dir = Path::new(model_dir);
     if !dir.is_dir() {
         return Err(AppError::Asr(format!(
@@ -202,14 +212,14 @@ pub fn discover_model_files(
         }
     }
 
-    let encoder = encoder
-        .ok_or_else(|| AppError::Asr(format!("no *encoder*.onnx in {}", dir.display())))?;
-    let decoder = decoder
-        .ok_or_else(|| AppError::Asr(format!("no *decoder*.onnx in {}", dir.display())))?;
-    let joiner = joiner
-        .ok_or_else(|| AppError::Asr(format!("no *joiner*.onnx in {}", dir.display())))?;
-    let tokens = tokens
-        .ok_or_else(|| AppError::Asr(format!("no *tokens.txt in {}", dir.display())))?;
+    let encoder =
+        encoder.ok_or_else(|| AppError::Asr(format!("no *encoder*.onnx in {}", dir.display())))?;
+    let decoder =
+        decoder.ok_or_else(|| AppError::Asr(format!("no *decoder*.onnx in {}", dir.display())))?;
+    let joiner =
+        joiner.ok_or_else(|| AppError::Asr(format!("no *joiner*.onnx in {}", dir.display())))?;
+    let tokens =
+        tokens.ok_or_else(|| AppError::Asr(format!("no *tokens.txt in {}", dir.display())))?;
 
     Ok((encoder, decoder, joiner, tokens))
 }
