@@ -77,7 +77,7 @@ pub async fn transcribe(
         return Err(AppError::Cancelled);
     }
 
-    // WAV-чтение + создание recognizer + decode — всё sync, в blocking pool.
+    // WAV-чтение + создание recognizer + decode (всё sync, в blocking pool).
     let audio_path = audio.to_path_buf();
     let result =
         tokio::task::spawn_blocking(move || -> AppResult<sherpa_onnx::OfflineRecognizerResult> {
@@ -92,8 +92,7 @@ pub async fn transcribe(
             // Диагностика: что реально получает sherpa-onnx. Если в логе видно
             // samples.len() / sample_rate ≈ длительности файла, а не ~100×короче
             // (что соответствовало бы fbank frames), значит энкодер получает raw
-            // samples вместо фичей и упрётся в max_seq_len (типично 5000 для
-            // Conformer positional encoding).
+            // samples вместо фичей и упрётся в max_seq_len (~5000 для Conformer).
             tracing::info!(
                 "ASR: {} samples @ {}Hz ({:.1}s) from {}",
                 samples.len(),
@@ -111,18 +110,16 @@ pub async fn transcribe(
             config.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
             config.model_config.num_threads = num_threads as i32;
             config.model_config.provider = Some(provider.to_string());
-            // GigaAM-V3 — это NeMo-стиль transducer (закодирован в репо
-            // amidexe/govorun-lite, который ипользует sherpa-onnx 1.13). Без
-            // этого поля sherpa-onnx не знает что это NeMo и подаёт raw samples
-            // в энкодер, который рассчитан на fbank-фичи → broadcasting
-            // error 5000 × N. См. также `feat_config` ниже.
+            // GigaAM-V3 — NeMo-стиль transducer (так использует amidexe/govorun-lite
+            // с sherpa-onnx 1.13). Без этого поля sherpa-onnx не знает, что это NeMo,
+            // и подаёт raw samples в энкодер, рассчитанный на fbank-фичи.
             config.model_config.model_type = Some("nemo_transducer".to_string());
             // GigaAM-V3 RNN-T обучен на 80-мерных fbank-фичах с 25ms окном /
             // 10ms шагом. Задаём явно на случай, если дефолты отличаются.
             config.feat_config.sample_rate = sample_rate;
             config.feat_config.feature_dim = 80;
 
-            // beam > 1 → modified_beam_search; beam == 1 → дефолт (greedy_search) из C-стороны.
+            // beam > 1 → modified_beam_search; beam == 1 → дефолт (greedy_search).
             let beam = beam_size.clamp(1, 64);
             if beam > 1 {
                 config.decoding_method = Some("modified_beam_search".to_string());
@@ -135,14 +132,14 @@ pub async fn transcribe(
                 )
             })?;
 
-            // Модель имеет max_seq_len ≈ 5000 в positional encoding. Наш
-            // `modelType = "nemo_transducer"` по какой-то причине не включает
-            // fbank-экстракцию в Rust-биндинге (модель всё ещё получает raw samples
-            // и падает на 5000 × N broadcasting). Чанк ≤4000 samples безопасен в
-            // обоих случаях — и с downsampling, и без. Каждый чанк — отдельный
-            // decode, результаты конкатенируются с корректировкой timestamps.
-            // 74 мин аудио → 17850 чанков (медленно, но работает; в проде можно
-            // поднять до 50_000 если fbank всё-таки заработает).
+            // Модель имеет max_seq_len ≈ 5000 в positional encoding. По какой-то
+            // причине Rust-биндинг sherpa-onnx 1.13 не применяет fbank к этой
+            // модели (несмотря на modelType="nemo_transducer"), и энкодер
+            // получает raw samples. Чанк ≤ 4000 samples безопасен в обоих
+            // случаях — и с downsampling, и без. 74-мин аудио → 17,850 чанков
+            // (медленно, но работает; в проде можно поднять до 50_000 если
+            // fbank всё-таки заработает). Каждый чанк — отдельный decode,
+            // результаты конкатенируются с корректировкой timestamps.
             const CHUNK_SAMPLES: usize = 4_000;
             let total = samples.len();
             let mut all_text = String::new();
@@ -189,10 +186,9 @@ pub async fn transcribe(
                 total
             );
 
-            // Собираем комбинированный OfflineRecognizerResult. Поля pub —
-            // конструкция извне разрешена. Дальше post-processing такой же как
-            // раньше (group_into_segments + log).
-            let result = sherpa_onnx::OfflineRecognizerResult {
+            // Конструктор OfflineRecognizerResult публичный — собираем комбинированный
+            // результат и возвращаем Ok(...) чтобы удовлетворить сигнатуре closure.
+            Ok(sherpa_onnx::OfflineRecognizerResult {
                 text: all_text,
                 tokens: all_tokens,
                 timestamps: if all_timestamps.is_empty() {
@@ -205,7 +201,7 @@ pub async fn transcribe(
                 } else {
                     Some(all_durations)
                 },
-            }
+            })
         })
         .await
         .map_err(|e| AppError::Asr(format!("asr join: {e}")))??;
