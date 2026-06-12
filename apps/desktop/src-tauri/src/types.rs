@@ -150,29 +150,11 @@ pub struct JobUpdate {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum BackendEvent {
     #[serde(rename = "job:created")]
-    JobCreated {
-        job: Box<Job>,
-    },
+    JobCreated { job: Box<Job> },
     #[serde(rename = "job:updated")]
-    JobUpdated {
-        id: JobId,
-        update: JobUpdate,
-    },
+    JobUpdated { id: JobId, update: JobUpdate },
     #[serde(rename = "job:log")]
-    JobLog {
-        id: JobId,
-        line: String,
-    },
-    #[serde(rename = "download:progress")]
-    DownloadProgress {
-        id: JobId,
-        pct: f32,
-        label: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        speed: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        eta: Option<String>,
-    },
+    JobLog { id: JobId, line: String },
     #[serde(rename = "job:done", rename_all = "camelCase")]
     JobDone {
         id: JobId,
@@ -180,10 +162,7 @@ pub enum BackendEvent {
         preview: String,
     },
     #[serde(rename = "job:failed", rename_all = "camelCase")]
-    JobFailed {
-        id: JobId,
-        error: String,
-    },
+    JobFailed { id: JobId, error: String },
 }
 
 /// Информация о доступных sidecar'ах — для команды `diagnose`.

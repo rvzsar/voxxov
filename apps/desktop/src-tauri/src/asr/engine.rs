@@ -10,13 +10,16 @@
 //! Если `model_dir` начинается с `cmd:` — fallback на внешний CLI
 //! (см. `cmd_fallback`).
 
+use super::fmt_mmss;
 use super::grouping::group_into_segments;
 use super::Transcription;
 use crate::config::AsrConfig;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
+use crate::types::{JobUpdate, Progress};
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 /// Main entry point: transcribe audio file → text + timed segments.
@@ -79,6 +82,9 @@ pub async fn transcribe(
 
     // WAV-чтение + создание recognizer + decode (всё sync, в blocking pool).
     let audio_path = audio.to_path_buf();
+    // Clone для UI progress-emit'ов внутри spawn_blocking (closure).
+    let state_for_progress = state.clone();
+    let job_id_owned = job_id.to_string();
     let result =
         tokio::task::spawn_blocking(move || -> AppResult<sherpa_onnx::OfflineRecognizerResult> {
             let wave = sherpa_onnx::Wave::read(&audio_path.to_string_lossy()).ok_or_else(|| {
@@ -132,20 +138,27 @@ pub async fn transcribe(
                 )
             })?;
 
-            // Модель имеет max_seq_len ≈ 5000 в positional encoding. По какой-то
-            // причине Rust-биндинг sherpa-onnx 1.13 не применяет fbank к этой
-            // модели (несмотря на modelType="nemo_transducer"), и энкодер
-            // получает raw samples. Чанк ≤ 4000 samples безопасен в обоих
-            // случаях — и с downsampling, и без. 74-мин аудио → 17,850 чанков
-            // (медленно, но работает; в проде можно поднять до 50_000 если
-            // fbank всё-таки заработает). Каждый чанк — отдельный decode,
+            // Размер чанка для decode. 50_000 samples ≈ 3.1 сек @ 16kHz. При
+            // включённом fbank (modelType="nemo_transducer") это ~310 фреймов
+            // @ 10ms hop — комфортно укладывается в max_seq_len ≈ 5000. Если
+            // fbank почему-то не применяется, упадёт с broadcasting error на
+            // positional encoding (тогда откатить до 4_000). 74-мин аудио
+            // → ~1,400 чанков (было 17,850). Каждый чанк — отдельный decode,
             // результаты конкатенируются с корректировкой timestamps.
-            const CHUNK_SAMPLES: usize = 4_000;
+            const CHUNK_SAMPLES: usize = 50_000;
             let total = samples.len();
             let mut all_text = String::new();
             let mut all_tokens: Vec<String> = Vec::new();
             let mut all_timestamps: Vec<f32> = Vec::new();
             let mut all_durations: Vec<f32> = Vec::new();
+
+            // Throttled UI progress: раз в 2 сек + на последнем чанке.
+            // RTF и ETA обновляются на основе реально обработанных сэмплов.
+            const PROGRESS_INTERVAL_SECS: u64 = 2;
+            let decode_start = Instant::now();
+            let mut last_emit = Instant::now();
+            let total_chunks = (total + CHUNK_SAMPLES - 1) / CHUNK_SAMPLES;
+            let mut chunk_idx: usize = 0;
 
             for chunk_start in (0..total).step_by(CHUNK_SAMPLES) {
                 if cancel.is_cancelled() {
@@ -176,6 +189,42 @@ pub async fn transcribe(
                 }
                 if let Some(durs) = r.durations {
                     all_durations.extend(durs);
+                }
+
+                chunk_idx += 1;
+
+                // UI progress: throttled — раз в 2 сек или последний чанк.
+                let now = Instant::now();
+                if chunk_idx == total_chunks
+                    || now.duration_since(last_emit) >= Duration::from_secs(PROGRESS_INTERVAL_SECS)
+                {
+                    let elapsed = decode_start.elapsed().as_secs_f32();
+                    let audio_done_samples = (chunk_idx * CHUNK_SAMPLES).min(total);
+                    let audio_done_sec = audio_done_samples as f32 / sample_rate as f32;
+                    let rtf = if audio_done_sec > 0.0 {
+                        elapsed / audio_done_sec
+                    } else {
+                        0.0
+                    };
+                    let audio_total_sec = total as f32 / sample_rate as f32;
+                    let eta_sec = if rtf > 0.0 && audio_done_sec < audio_total_sec {
+                        (audio_total_sec - audio_done_sec) * rtf
+                    } else {
+                        0.0
+                    };
+                    state_for_progress.update_job(
+                        &job_id_owned,
+                        JobUpdate {
+                            progress: Some(Progress {
+                                pct: chunk_idx as f32 / total_chunks as f32,
+                                label: format!("Распознаём {}/{}", chunk_idx, total_chunks),
+                                speed: Some(format!("RTF {:.2}x", rtf)),
+                                eta: Some(fmt_mmss(eta_sec)),
+                            }),
+                            ..Default::default()
+                        },
+                    );
+                    last_emit = now;
                 }
             }
 

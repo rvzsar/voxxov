@@ -103,6 +103,12 @@
     <span class="badge {stageClass}">{stageLabel(job.stage)}</span>
   </div>
   <ProgressBar pct={job.progress.pct} />
+  {#if job.progress.speed || job.progress.eta}
+    <div class="speed">
+      {#if job.progress.speed}<span class="speed-val">{job.progress.speed}</span>{/if}
+      {#if job.progress.eta}<span class="dim">ETA {job.progress.eta}</span>{/if}
+    </div>
+  {/if}
   <div class="meta">
     <span class="dim">{job.source === 'local_file' ? '📁' : ''}{host}</span>
     {#if job.media?.durationSec}<span class="dim">{fmtDuration(job.media.durationSec)}</span>{/if}
@@ -154,6 +160,8 @@
   .badge.muted { color: var(--muted); }
   .badge.info { color: var(--accent); }
   .meta { display: flex; gap: 6px; align-items: center; font-size: 11px; flex-wrap: wrap; }
+  .speed { display: flex; gap: 8px; align-items: center; font-size: 11px; }
+  .speed-val { color: var(--accent); font-variant-numeric: tabular-nums; }
   .dim { color: var(--muted); }
   .date { margin-left: auto; }
   .err { color: var(--err); }

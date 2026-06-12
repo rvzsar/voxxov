@@ -146,12 +146,4 @@ export type BackendEvent =
   | { kind: "job:updated"; id: JobId; update: Partial<Job> }
   | { kind: "job:log"; id: JobId; line: string }
   | { kind: "job:done"; id: JobId; transcriptPath: string; preview: string }
-  | { kind: "job:failed"; id: JobId; error: string }
-  | {
-      kind: "download:progress";
-      id: JobId;
-      pct: number;
-      label: string;
-      speed?: string;
-      eta?: string;
-    };
+  | { kind: "job:failed"; id: JobId; error: string };

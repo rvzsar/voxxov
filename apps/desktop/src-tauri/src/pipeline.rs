@@ -9,7 +9,7 @@ use crate::paths;
 use crate::state::AppState;
 use crate::types::{Job, JobSource, JobStage, JobUpdate, MediaInfo, Progress};
 use chrono::Utc;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 async fn ensure_asr_model(state: &AppState, job_id: &str) -> AppResult<PathBuf> {
@@ -28,12 +28,7 @@ async fn ensure_asr_model(state: &AppState, job_id: &str) -> AppResult<PathBuf> 
         format!(
             "ASR: downloading {} file(s) (~{} MB) from GitHub release {}",
             status.missing.len(),
-            status
-                .missing
-                .iter()
-                .map(|m| m.size.max(0))
-                .sum::<u64>()
-                / 1_000_000,
+            status.missing.iter().map(|m| m.size.max(0)).sum::<u64>() / 1_000_000,
             status.release_tag
         ),
     );
@@ -173,7 +168,12 @@ async fn run_inner(
         state.set_stage(&job.id, JobStage::Downloading, "Скачиваем видео…");
         let t = Instant::now();
         let downloaded = crate::ytdlp::YtDlpRunner::download(
-            &state, &job.id, &job.url, &workdir, cfg, token.clone(),
+            &state,
+            &job.id,
+            &job.url,
+            &workdir,
+            cfg,
+            token.clone(),
         )
         .await?;
         timings.download_sec = Some(t.elapsed().as_secs_f32());
@@ -182,12 +182,9 @@ async fn run_inner(
 
     // 3) Extract audio через ffmpeg.
     let audio_wav = workdir.join("audio.wav");
+    let input_size_bytes = std::fs::metadata(&source_file).map(|m| m.len()).ok();
     {
-        state.set_stage(
-            &job.id,
-            JobStage::ExtractingAudio,
-            "Извлекаем аудио…",
-        );
+        state.set_stage(&job.id, JobStage::ExtractingAudio, "Извлекаем аудио…");
         let in_p = source_file;
         let out_p = audio_wav.clone();
         let sr = cfg.asr.sample_rate;
@@ -195,15 +192,15 @@ async fn run_inner(
         let id2 = job.id.clone();
         let t = Instant::now();
         ffmpeg
-            .extract_audio(
-                &in_p,
-                &out_p,
-                sr,
-                token.clone(),
-                move |line| st2.log_line(&id2, format!("ffmpeg: {line}")),
-            )
+            .extract_audio(&in_p, &out_p, sr, token.clone(), move |line| {
+                st2.log_line(&id2, format!("ffmpeg: {line}"))
+            })
             .await?;
         timings.extract_sec = t.elapsed().as_secs_f32();
+        // W4: extract throughput в MB/s.
+        if let (Some(size), true) = (input_size_bytes, timings.extract_sec > 0.0) {
+            timings.extract_mb_per_sec = Some((size as f32 / 1_000_000.0) / timings.extract_sec);
+        }
     }
 
     // 4) Transcribe.
@@ -229,6 +226,16 @@ async fn run_inner(
     )
     .await?;
     timings.transcribe_sec = t.elapsed().as_secs_f32();
+    // W3: RTF и throughput — из длительности WAV (16kHz mono s16le, header=44 bytes).
+    let audio_duration_sec = wav_duration_sec(&audio_wav, cfg.asr.sample_rate);
+    if let Some(d) = audio_duration_sec {
+        if d > 0.0 {
+            timings.asr_rtf = Some(timings.transcribe_sec / d);
+        }
+        if timings.transcribe_sec > 0.0 {
+            timings.asr_throughput = Some(d * cfg.asr.sample_rate as f32 / timings.transcribe_sec);
+        }
+    }
     let text = transcription.text;
     let segments = transcription.segments;
 
@@ -271,7 +278,34 @@ async fn run_inner(
         let _ = std::fs::write(workdir.join("bench.json"), json);
     }
 
-    Ok((last_path.unwrap_or(workdir.join("transcript.txt")), text, timings))
+    Ok((
+        last_path.unwrap_or(workdir.join("transcript.txt")),
+        text,
+        timings,
+    ))
+}
+
+/// Длительность WAV в секундах по `data`-chunk size.
+/// Поддерживает стандартный 44-байтный header (PCM s16le, наш случай)
+/// и вариант с `LIST`-chunk до `data` (44 + 8 + N байт). Если `data` не
+/// найден в первом 4 KiB header'а — возвращаем None (fallback на file_size).
+fn wav_duration_sec(path: &Path, sample_rate: u32) -> Option<f32> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 4096];
+    let n = file.read(&mut buf).ok()?;
+    for i in 0..n.saturating_sub(8) {
+        if &buf[i..i + 4] == b"data" {
+            let size = u32::from_le_bytes([buf[i + 4], buf[i + 5], buf[i + 6], buf[i + 7]]);
+            return Some(size as f32 / (sample_rate as f32 * 2.0));
+        }
+    }
+    // Fallback: file_size − 44 (для 16kHz mono s16le это 32000 bytes/sec).
+    let size = std::fs::metadata(path).ok()?.len();
+    if size < 44 {
+        return None;
+    }
+    Some((size - 44) as f32 / (sample_rate as f32 * 2.0))
 }
 
 fn stage_label(s: &JobStage) -> &'static str {
@@ -302,9 +336,7 @@ fn text_to_srt_from_segments(segments: &[TimedSegment]) -> String {
         let start = format_srt_time_f(seg.start_sec);
         let end = format_srt_time_f(seg.end_sec.max(seg.start_sec + 0.05));
         let text = &seg.text;
-        out.push_str(&format!(
-            "{i}\n{start} --> {end}\n{text}\n\n"
-        ));
+        out.push_str(&format!("{i}\n{start} --> {end}\n{text}\n\n"));
     }
     out
 }

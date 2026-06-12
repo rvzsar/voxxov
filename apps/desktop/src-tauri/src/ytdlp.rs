@@ -22,8 +22,7 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
-const YT_DLP_URL: &str =
-    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+const YT_DLP_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
 const FFMPEG_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const METADATA_TIMEOUT: Duration = Duration::from_secs(60);
@@ -249,20 +248,21 @@ fn build_args(dl: &DownloadConfig) -> Vec<String> {
 // --- stderr parsing ---
 
 fn forward_progress(state: &AppState, job_id: &str, line: &str) {
-    if let Some(pct) = parse_download_pct(line) {
-        // Update the Job's `progress.pct` directly via update_job. The store
-        // re-emits a `JobUpdated` event which the UI merges into `job.progress.pct`
-        // (the same field the ProgressBar component reads). Sending a separate
-        // `DownloadProgress` event would be ignored by the UI — it only watches
-        // `job.progress.pct`.
+    if let Some(prog) = parse_download_progress(line) {
+        // Update the Job's `progress` directly via update_job. The store
+        // re-emits a `JobUpdated` event which the UI merges into `job.progress`.
+        let label = match prog.fragment.as_deref() {
+            Some(f) => format!("Загрузка · {f}"),
+            None => "Загрузка".to_string(),
+        };
         state.update_job(
             job_id,
             JobUpdate {
                 progress: Some(Progress {
-                    pct,
-                    label: "Загрузка".to_string(),
-                    speed: None,
-                    eta: None,
+                    pct: prog.pct,
+                    label,
+                    speed: prog.speed,
+                    eta: prog.eta,
                 }),
                 ..Default::default()
             },
@@ -274,15 +274,71 @@ fn forward_progress(state: &AppState, job_id: &str, line: &str) {
     debug!("yt-dlp stderr: {line}");
 }
 
-fn parse_download_pct(line: &str) -> Option<f32> {
+/// Распарсить одну stderr-строку yt-dlp. Форматы:
+/// `[download]  42.3% of   100.00MiB at    5.20MiB/s ETA 00:12`
+/// `[download]  42.3% of ~  100.00MiB at    5.20MiB/s ETA 00:12 (frag 5/12)`
+/// `[download] 100% of   100.00MiB in 00:19`  ← без speed/ETA
+/// `Unknown B/s` и `ETA --` пропускаются (ещё не известно на этом проходе).
+struct DownloadProgress {
+    pct: f32,
+    speed: Option<String>,
+    eta: Option<String>,
+    fragment: Option<String>,
+}
+
+fn parse_download_progress(line: &str) -> Option<DownloadProgress> {
     let idx = line.find("[download]")?;
-    let after = line[idx + 10..].trim_start();
-    let end = after.find('%')?;
-    after[..end]
-        .trim()
-        .parse::<f32>()
-        .ok()
-        .map(|p| (p / 100.0).clamp(0.0, 1.0))
+    let after = &line[idx + 10..];
+
+    // Percentage: число прямо перед '%'.
+    let pct_end = after.find('%')?;
+    let pct_str = after[..pct_end].trim().split_whitespace().next()?;
+    let pct_num: f32 = pct_str.parse().ok()?;
+
+    let mut out = DownloadProgress {
+        pct: (pct_num / 100.0).clamp(0.0, 1.0),
+        speed: None,
+        eta: None,
+        fragment: None,
+    };
+
+    // Speed: "at <rate>MiB/s" (или KiB/s, B/s). Берём токен после "at ".
+    // Пропускаем "Unknown" (ещё не определено yt-dlp'ом).
+    if let Some(at_pos) = after.find("at ") {
+        let after_at = &after[at_pos + 3..];
+        let end = after_at
+            .find(|c: char| c.is_whitespace() || c == ',')
+            .unwrap_or(after_at.len());
+        let s = after_at[..end].trim();
+        if !s.is_empty() && !s.starts_with("Unknown") {
+            out.speed = Some(s.to_string());
+        }
+    }
+
+    // ETA: "ETA <mm:ss>" или "ETA --" (skip).
+    if let Some(eta_pos) = after.find("ETA ") {
+        let after_eta = &after[eta_pos + 4..];
+        let end = after_eta
+            .find(|c: char| c.is_whitespace() || c == '(')
+            .unwrap_or(after_eta.len());
+        let e = after_eta[..end].trim();
+        if !e.is_empty() && e != "--" {
+            out.eta = Some(e.to_string());
+        }
+    }
+
+    // Fragment: "(frag N/M)" в HLS/DASH-стримах.
+    if let Some(frag_pos) = after.find("(frag ") {
+        let after_frag = &after[frag_pos + 6..];
+        if let Some(paren_end) = after_frag.find(')') {
+            let f = after_frag[..paren_end].trim();
+            if !f.is_empty() {
+                out.fragment = Some(f.to_string());
+            }
+        }
+    }
+
+    Some(out)
 }
 
 // --- auto-download ---
@@ -323,7 +379,10 @@ async fn download_to(url: &str, target: &Path) -> AppResult<()> {
         .await
         .map_err(|e| AppError::YtDlp(format!("GET {url}: {e}")))?;
     if !resp.status().is_success() {
-        return Err(AppError::YtDlp(format!("GET {url}: HTTP {}", resp.status())));
+        return Err(AppError::YtDlp(format!(
+            "GET {url}: HTTP {}",
+            resp.status()
+        )));
     }
     let bytes = resp
         .bytes()

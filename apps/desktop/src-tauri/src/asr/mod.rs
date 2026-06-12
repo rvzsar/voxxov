@@ -45,10 +45,20 @@ pub struct StageTimings {
     pub transcribe_sec: f32,
     /// Полное время от enqueue до done.
     pub total_sec: f32,
+    /// ASR Real-Time Factor: `transcribe_sec / audio_duration_sec`.
+    /// < 1.0 = быстрее realtime, > 1.0 = медленнее.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asr_rtf: Option<f32>,
+    /// ASR throughput в samples/sec (Capacity-planning метрика).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asr_throughput: Option<f32>,
+    /// Audio extract: MB входного файла / extract_sec.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extract_mb_per_sec: Option<f32>,
 }
 
 impl StageTimings {
-    /// "Готово · 2:30 (скачивание 1:10, аудио 0:08, ASR 1:12)".
+    /// "Готово · 2:30 (скачивание 1:10, аудио 0:08, ASR 1:12, RTF 0.42x)".
     /// Локальные файлы (без metadata/download) — короче.
     pub fn summary_ru(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
@@ -58,13 +68,25 @@ impl StageTimings {
         if let Some(t) = self.download_sec {
             parts.push(format!("скачивание {}", fmt_mmss(t)));
         }
-        parts.push(format!("аудио {}", fmt_mmss(self.extract_sec)));
-        parts.push(format!("ASR {}", fmt_mmss(self.transcribe_sec)));
-        format!("Готово · {} ({})", fmt_mmss(self.total_sec), parts.join(", "))
+        let mut audio = format!("аудио {}", fmt_mmss(self.extract_sec));
+        if let Some(mbps) = self.extract_mb_per_sec {
+            audio.push_str(&format!(" · {:.1} MB/s", mbps));
+        }
+        parts.push(audio);
+        let mut asr = format!("ASR {}", fmt_mmss(self.transcribe_sec));
+        if let Some(rtf) = self.asr_rtf {
+            asr.push_str(&format!(" · RTF {:.2}x", rtf));
+        }
+        parts.push(asr);
+        format!(
+            "Готово · {} ({})",
+            fmt_mmss(self.total_sec),
+            parts.join(", ")
+        )
     }
 }
 
-fn fmt_mmss(sec: f32) -> String {
+pub(crate) fn fmt_mmss(sec: f32) -> String {
     if sec < 60.0 {
         format!("{:.0}с", sec)
     } else {
@@ -104,7 +126,10 @@ mod tests {
         assert!(s.contains("1:32"));
         assert!(s.contains("аудио 8с"));
         assert!(s.contains("ASR 1:12"));
-        assert!(!s.contains("скачивание"), "local file should not mention download");
+        assert!(
+            !s.contains("скачивание"),
+            "local file should not mention download"
+        );
     }
 
     #[test]
