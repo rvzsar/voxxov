@@ -138,33 +138,35 @@ pub async fn transcribe(
                 )
             })?;
 
-            // CHUNK_SAMPLES — hard limit для одного decode-вызова. Позиционный
-            // encoding модели ~5000 → 3.1 сек @ 16kHz безопасно. При включённом
-            // fbank (modelType="nemo_transducer") это ~310 фреймов @ 10ms hop;
-            // без fbank — упрёмся в max_seq_len (тогда откатить на 4_000).
+            // CHUNK_SAMPLES — hard limit для одного decode-вызова.
+            // sherpa-onnx 1.13 для GigaAM применяет 64-dim fbank @ 25ms/10ms
+            // (см. OfflineRecognizerTransducerNeMoImpl::PostInit). Тогда
+            // 30s @ 16kHz = 3000 fbank-фреймов < 5000 (positional max). Если
+            // fbank по какой-то причине не применяется — упрёмся в max_seq_len
+            // (тогда откатить CHUNK_SAMPLES до 4_000).
             //
-            // Аудио сначала режется на речевые сегменты через energy-VAD
-            // (см. `segmentation.rs`): границы на паузах, не посреди слова.
-            // Длинные сегменты (> CHUNK_SAMPLES) суб-чанкуются. На 74-мин
-            // вебинаре: 1,476 сегментов, 99.5% ≤ 3 сек, 0.5% > 3 сек.
-            const CHUNK_SAMPLES: usize = 50_000;
+            // Размер чанков определяется официальным алгоритмом GigaAM
+            // (`gigaam.transcribe_longform` / `vad_utils.py`): min=15s,
+            // max=22s. На каждом чанке модель получает 1500-2200 fbank-фреймов
+            // — в 5-7× больше, чем раньше (3.1s = 310 фреймов), что и даёт
+            // нормальное качество.
+            const CHUNK_SAMPLES: usize = 480_000;
             let total = samples.len();
             let mut all_text = String::new();
             let mut all_tokens: Vec<String> = Vec::new();
             let mut all_timestamps: Vec<f32> = Vec::new();
             let mut all_durations: Vec<f32> = Vec::new();
 
-            // Energy-VAD: каждый сегмент <= CHUNK_SAMPLES — один чанк;
-            // длинный сегмент суб-чанкуется (редкий случай).
-            // `sample_rate` is i32 в sherpa_onnx::Wave; VAD принимает u32
-            // (для валидного аудио SR всегда > 0, cast безопасен).
-            let chunks: Vec<(usize, usize)> =
-                super::segmentation::find_speech_segments(&samples, sample_rate as u32)
-                    .iter()
-                    .flat_map(|&(s, e)| {
-                        (s..e).step_by(CHUNK_SAMPLES).map(move |cs| (cs, (cs + CHUNK_SAMPLES).min(e)))
-                    })
-                    .collect();
+            // 1) Energy-VAD: короткие речевые сегменты (0.5-1.5s) с границами
+            //    на паузах. 2) Группируем в ASR-чанки по 15-22s (как официальный
+            //    gigaam.transcribe_longform) — иначе модель видит обрывки слов.
+            //    `sample_rate` is i32 в sherpa_onnx::Wave; VAD принимает u32.
+            let speech_regions =
+                super::segmentation::find_speech_segments(&samples, sample_rate as u32);
+            let chunks: Vec<(usize, usize)> = super::segmentation::group_into_asr_chunks(
+                &speech_regions,
+                sample_rate as u32,
+            );
 
             // Throttled UI progress: раз в 2 сек + на последнем чанке.
             // RTF и ETA обновляются на основе реально обработанных сэмплов.
@@ -243,8 +245,13 @@ pub async fn transcribe(
             }
 
             tracing::info!(
-                "ASR: decoded {} chunks (≤{} samples) from {} samples",
-                (total + CHUNK_SAMPLES - 1) / CHUNK_SAMPLES,
+                "ASR: {} chunks (avg {:.1}s, ≤{} samples) from {} samples",
+                total_chunks,
+                if total_chunks > 0 {
+                    (total as f32 / total_chunks as f32) / sample_rate as f32
+                } else {
+                    0.0
+                },
                 CHUNK_SAMPLES,
                 total
             );

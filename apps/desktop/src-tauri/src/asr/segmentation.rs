@@ -96,6 +96,60 @@ pub fn find_speech_segments(samples: &[f32], sample_rate: u32) -> Vec<(usize, us
     segments
 }
 
+/// Группируем речевые регионы (от `find_speech_segments`) в ASR-чанки по
+/// 15-22 сек — алгоритм из `gigaam.transcribe_longform` (`vad_utils.py`).
+/// На каждом чанке модель получает 1500-2200 fbank-фреймов контекста —
+/// достаточно для распознавания целых фраз; в отличие от одиночных
+/// VAD-сегментов (0.5-1.5 сек = 50-150 фреймов), которые дают обрывки.
+///
+/// `new_chunk_threshold`: пауза > 0.2с начинает новый чанк.
+pub fn group_into_asr_chunks(
+    regions: &[(usize, usize)],
+    sample_rate: u32,
+) -> Vec<(usize, usize)> {
+    const MIN_DUR_SEC: f32 = 15.0;
+    const MAX_DUR_SEC: f32 = 22.0;
+    const NEW_CHUNK_THRESHOLD_SEC: f32 = 0.2;
+
+    let mut chunks = Vec::new();
+    let mut curr_start: Option<usize> = None;
+    let mut curr_end: usize = 0;
+
+    for &(s, e) in regions {
+        let curr_dur_sec = curr_start
+            .map(|cs| (curr_end - cs) as f32 / sample_rate as f32)
+            .unwrap_or(0.0);
+        let seg_dur_sec = (e - s) as f32 / sample_rate as f32;
+
+        match curr_start {
+            None => {
+                curr_start = Some(s);
+                curr_end = e;
+            }
+            Some(_) if curr_dur_sec > NEW_CHUNK_THRESHOLD_SEC
+                && (curr_dur_sec + seg_dur_sec > MAX_DUR_SEC
+                    || curr_dur_sec > MIN_DUR_SEC) =>
+            {
+                chunks.push((curr_start.unwrap(), curr_end));
+                curr_start = Some(s);
+                curr_end = e;
+            }
+            Some(_) => {
+                curr_end = e;
+            }
+        }
+    }
+
+    if let Some(cs) = curr_start {
+        let dur_sec = (curr_end - cs) as f32 / sample_rate as f32;
+        if dur_sec > NEW_CHUNK_THRESHOLD_SEC {
+            chunks.push((cs, curr_end));
+        }
+    }
+
+    chunks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +271,60 @@ mod tests {
         s.extend(sine(SR, 0.005));
         s.extend(silence(SR));
         assert!(find_speech_segments(&s, SR).is_empty());
+    }
+
+    // ===== group_into_asr_chunks =====
+
+    /// Сэмплов в N миллисекунд при sample rate = SR.
+    fn ms(ms: u32) -> usize {
+        (ms as usize * SR as usize) / 1000
+    }
+
+    #[test]
+    fn group_empty() {
+        assert!(group_into_asr_chunks(&[], SR).is_empty());
+    }
+
+    #[test]
+    fn group_concatenates_short_segments_to_min_duration() {
+        // 30 сегментов по 700ms с gap 200ms → все склеиваются в 1 чанк ~21s
+        // (30 × 0.7 + 29 × 0.2 = 26.8s, но curr_dur > 15s триггерит новый
+        // чанк на 16-м сегменте; см. логику `curr_dur > MIN_DUR`).
+        let mut regions = Vec::new();
+        let mut pos = 0;
+        for _ in 0..30 {
+            regions.push((pos, pos + ms(700)));
+            pos += ms(700) + ms(200);
+        }
+        let chunks = group_into_asr_chunks(&regions, SR);
+        assert!(!chunks.is_empty(), "should produce at least 1 chunk");
+        let (s, e) = chunks[0];
+        let dur = (e - s) as f32 / SR as f32;
+        assert!(dur >= 15.0, "first chunk should be >= 15s, got {dur:.1}");
+    }
+
+    #[test]
+    fn group_splits_long_run_at_max_duration() {
+        // 50 сегментов по 700ms с gap 200ms → должно дать ≥2 чанка
+        // (общая длина 50×0.7 + 49×0.2 = 44.8s, разобьётся на 2 чанка ~22s).
+        let mut regions = Vec::new();
+        let mut pos = 0;
+        for _ in 0..50 {
+            regions.push((pos, pos + ms(700)));
+            pos += ms(700) + ms(200);
+        }
+        let chunks = group_into_asr_chunks(&regions, SR);
+        assert!(
+            chunks.len() >= 2,
+            "50×0.7s segments should produce ≥2 chunks, got {}",
+            chunks.len()
+        );
+    }
+
+    #[test]
+    fn group_drops_chunks_below_threshold() {
+        // Один короткий сегмент 100ms (ниже new_chunk_threshold 200ms) → отброшен.
+        let regions = vec![(0, ms(100))];
+        assert!(group_into_asr_chunks(&regions, SR).is_empty());
     }
 }
