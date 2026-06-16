@@ -138,13 +138,15 @@ pub async fn transcribe(
                 )
             })?;
 
-            // Размер чанка для decode. 50_000 samples ≈ 3.1 сек @ 16kHz. При
-            // включённом fbank (modelType="nemo_transducer") это ~310 фреймов
-            // @ 10ms hop — комфортно укладывается в max_seq_len ≈ 5000. Если
-            // fbank почему-то не применяется, упадёт с broadcasting error на
-            // positional encoding (тогда откатить до 4_000). 74-мин аудио
-            // → ~1,400 чанков (было 17,850). Каждый чанк — отдельный decode,
-            // результаты конкатенируются с корректировкой timestamps.
+            // CHUNK_SAMPLES — hard limit для одного decode-вызова. Позиционный
+            // encoding модели ~5000 → 3.1 сек @ 16kHz безопасно. При включённом
+            // fbank (modelType="nemo_transducer") это ~310 фреймов @ 10ms hop;
+            // без fbank — упрёмся в max_seq_len (тогда откатить на 4_000).
+            //
+            // Аудио сначала режется на речевые сегменты через energy-VAD
+            // (см. `segmentation.rs`): границы на паузах, не посреди слова.
+            // Длинные сегменты (> CHUNK_SAMPLES) суб-чанкуются. На 74-мин
+            // вебинаре: 1,476 сегментов, 99.5% ≤ 3 сек, 0.5% > 3 сек.
             const CHUNK_SAMPLES: usize = 50_000;
             let total = samples.len();
             let mut all_text = String::new();
@@ -152,19 +154,31 @@ pub async fn transcribe(
             let mut all_timestamps: Vec<f32> = Vec::new();
             let mut all_durations: Vec<f32> = Vec::new();
 
+            // Energy-VAD: каждый сегмент <= CHUNK_SAMPLES — один чанк;
+            // длинный сегмент суб-чанкуется (редкий случай).
+            // `sample_rate` is i32 в sherpa_onnx::Wave; VAD принимает u32
+            // (для валидного аудио SR всегда > 0, cast безопасен).
+            let chunks: Vec<(usize, usize)> =
+                super::segmentation::find_speech_segments(&samples, sample_rate as u32)
+                    .iter()
+                    .flat_map(|&(s, e)| {
+                        (s..e).step_by(CHUNK_SAMPLES).map(move |cs| (cs, (cs + CHUNK_SAMPLES).min(e)))
+                    })
+                    .collect();
+
             // Throttled UI progress: раз в 2 сек + на последнем чанке.
             // RTF и ETA обновляются на основе реально обработанных сэмплов.
             const PROGRESS_INTERVAL_SECS: u64 = 2;
             let decode_start = Instant::now();
             let mut last_emit = Instant::now();
-            let total_chunks = (total + CHUNK_SAMPLES - 1) / CHUNK_SAMPLES;
+            let total_chunks = chunks.len();
             let mut chunk_idx: usize = 0;
+            let mut samples_done: usize = 0;
 
-            for chunk_start in (0..total).step_by(CHUNK_SAMPLES) {
+            for (chunk_start, chunk_end) in chunks {
                 if cancel.is_cancelled() {
                     return Err(AppError::Cancelled);
                 }
-                let chunk_end = (chunk_start + CHUNK_SAMPLES).min(total);
                 let chunk = &samples[chunk_start..chunk_end];
 
                 let stream = recognizer.create_stream();
@@ -191,6 +205,7 @@ pub async fn transcribe(
                     all_durations.extend(durs);
                 }
 
+                samples_done = chunk_end;
                 chunk_idx += 1;
 
                 // UI progress: throttled — раз в 2 сек или последний чанк.
@@ -199,8 +214,7 @@ pub async fn transcribe(
                     || now.duration_since(last_emit) >= Duration::from_secs(PROGRESS_INTERVAL_SECS)
                 {
                     let elapsed = decode_start.elapsed().as_secs_f32();
-                    let audio_done_samples = (chunk_idx * CHUNK_SAMPLES).min(total);
-                    let audio_done_sec = audio_done_samples as f32 / sample_rate as f32;
+                    let audio_done_sec = samples_done as f32 / sample_rate as f32;
                     let rtf = if audio_done_sec > 0.0 {
                         elapsed / audio_done_sec
                     } else {

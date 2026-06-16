@@ -9,6 +9,7 @@
 pub mod cmd_fallback;
 pub mod engine;
 pub mod grouping;
+pub mod segmentation;
 
 pub use engine::transcribe;
 
