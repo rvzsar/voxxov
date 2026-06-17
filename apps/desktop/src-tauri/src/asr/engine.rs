@@ -157,16 +157,13 @@ pub async fn transcribe(
             let mut all_timestamps: Vec<f32> = Vec::new();
             let mut all_durations: Vec<f32> = Vec::new();
 
-            // 1) Energy-VAD: короткие речевые сегменты (0.5-1.5s) с границами
-            //    на паузах. 2) Группируем в ASR-чанки по 15-22s (как официальный
-            //    gigaam.transcribe_longform) — иначе модель видит обрывки слов.
-            //    `sample_rate` is i32 в sherpa_onnx::Wave; VAD принимает u32.
-            let speech_regions =
+            // SileroVad через sherpa-onnx: каждый сегмент 0.25-30 сек речи
+            // сразу идёт в GigaAM как один chunk (1500-3000 fbank-фреймов
+            // контекста). Группировка не нужна — SileroVad segments уже
+            // оптимального размера (как в gigaam.transcribe_longform / govorun-lite).
+            // `sample_rate` is i32 в sherpa_onnx::Wave; VAD принимает u32.
+            let chunks: Vec<(usize, usize)> =
                 super::segmentation::find_speech_segments(&samples, sample_rate as u32);
-            let chunks: Vec<(usize, usize)> = super::segmentation::group_into_asr_chunks(
-                &speech_regions,
-                sample_rate as u32,
-            );
 
             // Throttled UI progress: раз в 2 сек + на последнем чанке.
             // RTF и ETA обновляются на основе реально обработанных сэмплов.
