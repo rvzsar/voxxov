@@ -22,10 +22,14 @@ const VAD_MIN_SILENCE_SEC: f32 = 0.5;
 const VAD_MIN_SPEECH_SEC: f32 = 0.25;
 const VAD_WINDOW_SIZE: i32 = 512;
 const VAD_MAX_SPEECH_SEC: f32 = 30.0;
-/// Размер rolling-буфера VAD (секунды). Должен быть > max_speech_duration.
+/// Размер rolling-буфера VAD (секунды). Должен быть > VAD_CHUNK_SEC.
 const VAD_BUFFER_SEC: f32 = 60.0;
-/// Размер чанка, которым feed'им VAD (секунды). Должен быть < buffer_sec.
-const VAD_FEED_CHUNK_SEC: usize = 30;
+/// Размер чанка, которым feed'им VAD за один проход. МЕНЬШЕ VAD_BUFFER_SEC —
+/// иначе circular buffer sherpa-onnx переполнится и OOM-крашнет процесс
+/// (см. 2286d88 followup: 2 чанка по 30s без reset уже забивают 60s буфер,
+/// третий push = overflow). 30s выбран как max_speech_duration — каждый
+/// чанк самодостаточен, cross-chunk context не теряется на реальной речи.
+const VAD_CHUNK_SEC: usize = 30;
 
 /// Возвращает список пар `(start_sample, end_sample)` для каждого
 /// речевого сегмента от SileroVad. Сегменты по 0.25-30 сек — сразу
@@ -72,34 +76,54 @@ pub fn find_speech_segments(samples: &[f32], sample_rate: u32) -> Vec<(usize, us
         }
     };
 
-    // Stream-feed в VAD_FEED_CHUNK_SEC чанках, чтобы не превышать rolling buffer
-    // (60s) и не упереться в огромный call для часового аудио.
-    let feed_chunk_samples = sample_rate as usize * VAD_FEED_CHUNK_SEC;
+    // Chunked processing: sherpa-onnx 1.13 VAD **не** auto-drain'ит
+    // circular buffer — он растёт на каждом push и переполняется при
+    // > VAD_BUFFER_SEC (60s) входных данных, OOM-крашит процесс.
+    // Решение: feed'им по VAD_CHUNK_SEC (30s) и `vad.reset()` между
+    // чанками. reset() теряет cross-chunk VAD context, но
+    // max_speech_duration=30s уже ограничивает любой сегмент длиной
+    // VAD_CHUNK_SEC — каждый чанк самодостаточен.
+    let chunk_samples = sample_rate as usize * VAD_CHUNK_SEC;
     let mut segments: Vec<(usize, usize)> = Vec::new();
 
-    for chunk_start in (0..samples.len()).step_by(feed_chunk_samples) {
-        let chunk_end = (chunk_start + feed_chunk_samples).min(samples.len());
-        vad.accept_waveform(&samples[chunk_start..chunk_end]);
-        drain_segments(&vad, samples.len(), &mut segments);
-    }
+    for chunk_start in (0..samples.len()).step_by(chunk_samples) {
+        let chunk_end = (chunk_start + chunk_samples).min(samples.len());
+        let chunk = &samples[chunk_start..chunk_end];
 
-    // Flush: VAD удерживает последние min_silence_duration секунд в буфере
-    // ожидая «может ещё речь». flush() форсирует эмиссию хвоста.
-    vad.flush();
-    drain_segments(&vad, samples.len(), &mut segments);
+        // Feed whole chunk at once (sherpa-onnx internal windows it).
+        vad.accept_waveform(chunk);
+        drain_segments(&vad, chunk_start, samples.len(), &mut segments);
+
+        // Flush: VAD удерживает последние min_silence_duration секунд в
+        // буфере ожидая «может ещё речь». flush() форсирует эмиссию.
+        vad.flush();
+        drain_segments(&vad, chunk_start, samples.len(), &mut segments);
+
+        // Reset: освобождает circular buffer. Без него 2-й чанк уже
+        // переполнит буфер (VAD_CHUNK_SEC + VAD_CHUNK_SEC > VAD_BUFFER_SEC).
+        vad.reset();
+    }
 
     segments
 }
 
 /// Сливает готовые VAD-сегменты в `out`, фильтруя по мин. длине.
-fn drain_segments(vad: &VoiceActivityDetector, samples_len: usize, out: &mut Vec<(usize, usize)>) {
+/// `absolute_offset` прибавляется к `seg.start()` — после `vad.reset()`
+/// индексы VAD снова 0-based, нужно привести к глобальным sample offsets.
+fn drain_segments(
+    vad: &VoiceActivityDetector,
+    absolute_offset: usize,
+    samples_len: usize,
+    out: &mut Vec<(usize, usize)>,
+) {
     while !vad.is_empty() {
         let seg = match vad.front() {
             Some(s) => s,
             None => break,
         };
-        let seg_start = seg.start() as usize;
+        let seg_start_local = seg.start() as usize;
         let seg_n = seg.n() as usize;
+        let seg_start = absolute_offset + seg_start_local;
         let seg_end = (seg_start + seg_n).min(samples_len);
         if seg_n >= MIN_SEGMENT_SAMPLES {
             out.push((seg_start, seg_end));
