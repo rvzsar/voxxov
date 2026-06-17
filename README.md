@@ -8,15 +8,54 @@ Written in Rust (Tauri 2) + Svelte 5. Portable — all data lives next to the ex
 
 ## Pipeline
 
-URL or local file → yt-dlp → ffmpeg (16 kHz mono WAV) → GigaAM RNN-T (sherpa-onnx) → TXT / SRT / JSON
+```
+URL or local file
+  → yt-dlp                 (download)
+  → ffmpeg                 (→ 16 kHz mono WAV)
+  → SileroVad              (segmentation: 0.25–30s speech chunks)
+  → GigaAM-V3 RNN-T INT8   (sherpa-onnx, one decode per chunk)
+  → TXT / SRT / JSON
+```
 
-- Parallel download/ffmpeg stages; single ASR decoder at a time (CPU-serialized via semaphore)
+- Parallel download / ffmpeg stages; single ASR decoder at a time (CPU-serialized via semaphore)
 - Cancellation at any stage
 - SOCKS5 / HTTP(S) proxy with user/pass and no-proxy list
 - ASR devices: CPU / CUDA / DirectML / OpenVINO
 - Beam search (1..64), greedy fallback
 - `cmd:` prefix in `modelDir` — delegate ASR to external CLI
-- Auto-downloads yt-dlp, ffmpeg, and GigaAM model files on first launch
+- Auto-downloads yt-dlp, ffmpeg, GigaAM model, and SileroVad on first launch
+- Real-time progress: per-stage speed / ETA, ASR RTF (real-time factor)
+
+## How ASR works
+
+1. **SileroVad** (`silero_vad.onnx`, 629 KB) splits the audio into speech segments of 0.25–30 seconds each. Boundaries fall on silences ≥ 500 ms — never mid-word.
+2. Each segment is sent to **GigaAM-V3 RNN-T INT8** (`gigaam_v3_e2e_rnnt_encoder_int8.onnx`, ~319 MB) as a single decode call. The model receives 25–3000 fbank frames of context — enough to recognize whole phrases.
+3. Per-token timestamps from the decoder are grouped into display segments (max 25 BPE tokens or at sentence boundaries).
+4. Output: `text` (full clean text), `tokens` (BPE strings), `timestamps` (per-token seconds), `durations` (per-token durations).
+
+The pipeline matches [gigaam.transcribe_longform](https://github.com/salute-developers/GigaAM) and [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite) architecture — same model, same config, same chunking strategy.
+
+## bench.json — per-job performance metrics
+
+Written to `<workdir>/bench.json` after each job:
+
+```json
+{
+  "metadata_sec":      3.49,
+  "download_sec":    660.31,
+  "extract_sec":       0.62,
+  "transcribe_sec":  926.45,
+  "total_sec":      1593.08,
+  "asr_rtf":           0.051,
+  "asr_throughput":  313497.72,
+  "extract_mb_per_sec": 230.09
+}
+```
+
+- `*_sec` — wall-clock time per stage
+- `asr_rtf` — Real-Time Factor: `transcribe_sec / audio_duration_sec`. < 1.0 means faster than real-time
+- `asr_throughput` — audio samples processed per second of wall time
+- `extract_mb_per_sec` — ffmpeg input MB per second
 
 ## Quick Start
 
@@ -26,7 +65,7 @@ scripts\dev.cmd
 
 Auto-downloads:
 - `yt-dlp.exe`, `ffmpeg.exe` → `<exe_dir>/bin/`
-- 4 GigaAM-V3 RNN-T files (~320 MB) → `<exe_dir>/models/`
+- 4 GigaAM-V3 RNN-T files (encoder_int8, decoder, joint, tokens) + `silero_vad.onnx` → `<exe_dir>/models/`
 
 If the executable lives in a read-only location, the app panics at startup with a clear error.
 
@@ -73,9 +112,9 @@ keepFiles = 3
 ```
 Voxxov/
 ├── voxxov.exe
-├── data/             # config.toml, logs/, jobs/<id>/, transcripts/
-├── models/           # auto-downloaded GigaAM-V3
-└── bin/              # auto-downloaded yt-dlp, ffmpeg
+├── data/             # config.toml, logs/, jobs/<id>/, bench.json, transcripts/
+├── models/           # GigaAM-V3 + silero_vad.onnx (auto-downloaded)
+└── bin/              # yt-dlp, ffmpeg (auto-downloaded)
 ```
 
 ## Build
