@@ -107,6 +107,18 @@ pub async fn transcribe(
                 audio_path.display()
             );
 
+            // Diagnostic: check sample range
+            let (s_min, s_max) = samples
+                .iter()
+                .fold((f32::MAX, f32::MIN), |(mn, mx), &s| (mn.min(s), mx.max(s)));
+            let s_mean: f32 = samples.iter().map(|s| s.abs()).sum::<f32>() / samples.len() as f32;
+            tracing::info!(
+                "ASR samples: min={:.4} max={:.4} mean_abs={:.4}",
+                s_min,
+                s_max,
+                s_mean
+            );
+
             let mut config = OfflineRecognizerConfig::default();
             config.model_config.transducer = OfflineTransducerModelConfig {
                 encoder: Some(encoder.to_string_lossy().into_owned()),
@@ -165,6 +177,26 @@ pub async fn transcribe(
             let chunks: Vec<(usize, usize)> =
                 super::segmentation::find_speech_segments(&samples, sample_rate as u32);
 
+            // Diagnostic: log VAD segments
+            tracing::info!(
+                "ASR VAD: {} segments from {} samples ({:.1}s)",
+                chunks.len(),
+                total,
+                total as f32 / sample_rate as f32
+            );
+            for (i, &(s, e)) in chunks.iter().enumerate().take(20) {
+                tracing::info!(
+                    "ASR VAD seg[{}]: {}..{} ({:.2}s)",
+                    i,
+                    s,
+                    e,
+                    (e - s) as f32 / sample_rate as f32
+                );
+            }
+            if chunks.len() > 20 {
+                tracing::info!("ASR VAD: ... and {} more segments", chunks.len() - 20);
+            }
+
             // Throttled UI progress: раз в 2 сек + на последнем чанке.
             // RTF и ETA обновляются на основе реально обработанных сэмплов.
             const PROGRESS_INTERVAL_SECS: u64 = 2;
@@ -190,6 +222,19 @@ pub async fn transcribe(
 
                 let chunk_offset_sec = chunk_start as f32 / sample_rate as f32;
                 let chunk_text = r.text.trim();
+
+                // Diagnostic: log each chunk result
+                let text_preview: String = chunk_text.chars().take(80).collect();
+                tracing::info!(
+                    "ASR chunk[{}/{}]: samples {}..{} ({:.2}s) tokens={} text={:?}",
+                    chunk_idx,
+                    total_chunks,
+                    chunk_start,
+                    chunk_end,
+                    (chunk_end - chunk_start) as f32 / sample_rate as f32,
+                    r.tokens.len(),
+                    text_preview
+                );
                 if !chunk_text.is_empty() {
                     if !all_text.is_empty() {
                         all_text.push(' ');

@@ -109,24 +109,14 @@ pub fn find_speech_segments(samples: &[f32], sample_rate: u32) -> Vec<(usize, us
 
 /// Сливает готовые VAD-сегменты в `out`.
 ///
-/// **Workaround sherpa-onnx 1.13.2 Rust binding bug:** struct C `SpeechSegment`
-/// в исходниках имеет `std::vector<float> samples` (24 байта), но Rust binding
-/// ожидает `{int32, *mut f32, int32}` (12 байт). Layout mismatch: чтение
-/// `seg.n()` / `seg.samples()` возвращает МУСОР (low 32 bits указателя
-/// vector.begin). Это давало гигантские сегменты по 10+ минут, ASR их
-/// "тушил" и выдавал мусор (RTF=0.004 на 58-мин видео).
-///
-/// Используем ТОЛЬКО `seg.start()` (offset 0, читается корректно). Границы
-/// сегментов восстанавливаем по тому факту, что VAD эмитит их contiguously:
-/// конец сегмента N ≈ начало сегмента N+1. Последний сегмент чанка
-/// заканчивается на `chunk_end`.
+/// Используем `seg.start()` (начало сегмента) и `seg.n()` (длина в сэмплах)
+/// для точного извлечения границ сегмента.
 ///
 /// Параметры:
 /// - `vad` — VoiceActivityDetector (с непустой очередью segments_).
 /// - `absolute_offset` — глобальный sample offset начала текущего чанка
 ///   (прибавляется к локальным VAD-индексам после `reset()`).
-/// - `chunk_end` — глобальный sample offset конца текущего чанка (= конец
-///   последнего сегмента чанка).
+/// - `chunk_end` — глобальный sample offset конца текущего чанка.
 /// - `out` — куда пушим (start, end) пары.
 fn drain_segments(
     vad: &VoiceActivityDetector,
@@ -134,25 +124,16 @@ fn drain_segments(
     chunk_end: usize,
     out: &mut Vec<(usize, usize)>,
 ) {
-    // 1. Собираем start-ы сегментов в текущем буфере VAD.
-    let mut starts: Vec<usize> = Vec::new();
     while !vad.is_empty() {
         if let Some(seg) = vad.front() {
-            // seg.start() — offset 0 в C struct, читается корректно.
             let seg_start = absolute_offset + seg.start() as usize;
-            starts.push(seg_start);
+            let seg_len = seg.n() as usize;
+            let seg_end = (seg_start + seg_len).min(chunk_end);
+            if seg_end > seg_start && seg_end - seg_start >= MIN_SEGMENT_SAMPLES {
+                out.push((seg_start, seg_end));
+            }
         }
         vad.pop();
-    }
-
-    // 2. Конвертируем в (start, end) пары. VAD эмитит сегменты contiguously
-    //    (конец N = начало N+1 + min_silence). Последний сегмент в чанке
-    //    тянется до chunk_end.
-    for (i, &start) in starts.iter().enumerate() {
-        let end = starts.get(i + 1).copied().unwrap_or(chunk_end);
-        if end > start && end - start >= MIN_SEGMENT_SAMPLES {
-            out.push((start, end));
-        }
     }
 }
 
