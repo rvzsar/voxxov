@@ -29,11 +29,13 @@ URL или локальный файл
 ## Как работает ASR
 
 1. **SileroVad** (`silero_vad.onnx`, 629 KB) режет аудио на речевые сегменты по 0.25–30 сек. Границы — на паузах ≥ 500 мс, никогда не посреди слова.
-2. Каждый сегмент отдаётся в **GigaAM-V3 RNN-T INT8** (`gigaam_v3_e2e_rnnt_encoder_int8.onnx`, ~319 MB) одним вызовом decode. Модель получает 25–3000 fbank-фреймов контекста — достаточно для распознавания целых фраз.
-3. Per-token таймстампы из декодера группируются в display-сегменты (макс 25 BPE-токенов или на границе предложения).
+2. Каждый сегмент отдаётся в **GigaAM-V3 RNN-T INT8** (`v3_rnnt_encoder_int8.onnx`, ~215 MB) одним вызовом decode. Модель получает 25–3000 fbank-фреймов контекста — достаточно для распознавания целых фраз.
+3. Per-token таймстампы из декодера группируются в display-сегменты (макс 25 токенов или на границе предложения).
 4. На выходе: `text` (полный чистый текст), `tokens` (BPE-строки), `timestamps` (per-token секунды), `durations` (per-token длительности).
 
-Пайплайн повторяет архитектуру [gigaam.transcribe_longform](https://github.com/salute-developers/GigaAM) и [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite) — та же модель, тот же конфиг, та же стратегия чанкинга.
+Пайплайн повторяет архитектуру [gigaam.transcribe_longform](https://github.com/salute-developers/GigaAM) и [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) — та же модель, тот же конфиг, та же стратегия чанкинга.
+
+**WER**: rnnt голова даёт ~3.55% на чистом чтении (vs ~8.6% у e2e_rnnt). Выход — lowercase без пунктуации; при необходимости добавить постпроцессинг.
 
 ## bench.json — перформанс-метрики по задаче
 
@@ -126,12 +128,12 @@ Voxxov/
 
 **GPL-3.0-only** — см. [LICENSE](./LICENSE).
 
-Файлы модели GigaAM скачиваются из релизов [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite). Сама модель GigaAM разработана [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) под **некоммерческой лицензией** — для коммерческого использования требуется отдельное соглашение с правообладателем.
+Файлы модели GigaAM (rnnt голова, INT8 квантизация) скачиваются из релизов [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt). Сама модель GigaAM разработана [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) под **некоммерческой лицензией** — для коммерческого использования требуется отдельное соглашение с правообладателем.
 
 ## Благодарности
 
 - [GigaAM](https://github.com/salute-developers/GigaAM) — модель распознавания речи, Salute Developers (Sber)
-- [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite) — упаковка и хостинг релизов файлов модели GigaAM-V3
+- [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) — упаковка файлов модели GigaAM-V3 rnnt, INT8 квантизация и хостинг релизов
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (csukuangfj) — ONNX-рантайм, статически слинкованная C-библиотека для ASR-инференса (Apache-2.0)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — загрузчик видео (Unlicense)
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) — Windows-бинари ffmpeg (GPL)

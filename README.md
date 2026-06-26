@@ -29,11 +29,13 @@ URL or local file
 ## How ASR works
 
 1. **SileroVad** (`silero_vad.onnx`, 629 KB) splits the audio into speech segments of 0.25–30 seconds each. Boundaries fall on silences ≥ 500 ms — never mid-word.
-2. Each segment is sent to **GigaAM-V3 RNN-T INT8** (`gigaam_v3_e2e_rnnt_encoder_int8.onnx`, ~319 MB) as a single decode call. The model receives 25–3000 fbank frames of context — enough to recognize whole phrases.
-3. Per-token timestamps from the decoder are grouped into display segments (max 25 BPE tokens or at sentence boundaries).
+2. Each segment is sent to **GigaAM-V3 RNN-T INT8** (`v3_rnnt_encoder_int8.onnx`, ~215 MB) as a single decode call. The model receives 25–3000 fbank frames of context — enough to recognize whole phrases.
+3. Per-token timestamps from the decoder are grouped into display segments (max 25 tokens or at sentence boundaries).
 4. Output: `text` (full clean text), `tokens` (BPE strings), `timestamps` (per-token seconds), `durations` (per-token durations).
 
-The pipeline matches [gigaam.transcribe_longform](https://github.com/salute-developers/GigaAM) and [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite) architecture — same model, same config, same chunking strategy.
+The pipeline matches [gigaam.transcribe_longform](https://github.com/salute-developers/GigaAM) and [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) architecture — same model, same config, same chunking strategy.
+
+**WER**: rnnt head achieves ~3.55% on clean read (vs ~8.6% for e2e_rnnt). Output is lowercase without punctuation; add post-processing if needed.
 
 ## bench.json — per-job performance metrics
 
@@ -126,12 +128,12 @@ Voxxov/
 
 **GPL-3.0-only** — see [LICENSE](./LICENSE).
 
-GigaAM model files are downloaded from [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite) releases. The GigaAM model itself is developed by [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) under a **non-commercial license** — commercial use requires a separate agreement with the rights holder.
+GigaAM model files (rnnt head, INT8 quantized) are downloaded from [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) releases. The GigaAM model itself is developed by [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) under a **non-commercial license** — commercial use requires a separate agreement with the rights holder.
 
 ## Credits
 
 - [GigaAM](https://github.com/salute-developers/GigaAM) — speech recognition model, Salute Developers (Sber)
-- [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite) — GigaAM-V3 model file packaging and release hosting
+- [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) — GigaAM-V3 rnnt model file packaging, INT8 quantization and release hosting
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (csukuangfj) — ONNX runtime, static-linked C library for ASR inference (Apache-2.0)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — video downloader (Unlicense)
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) — ffmpeg Windows binaries (GPL)

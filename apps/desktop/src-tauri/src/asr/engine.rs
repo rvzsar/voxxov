@@ -128,14 +128,14 @@ pub async fn transcribe(
             config.model_config.tokens = Some(tokens.to_string_lossy().into_owned());
             config.model_config.num_threads = num_threads as i32;
             config.model_config.provider = Some(provider.to_string());
-            // GigaAM-V3 — NeMo-стиль transducer (так использует amidexe/govorun-lite
+            // GigaAM-V3 — NeMo-стиль transducer (так использует ekhodzitsky/gigastt
             // с sherpa-onnx 1.13). Без этого поля sherpa-onnx не знает, что это NeMo,
-            // и подаёт raw samples в энкодер, рассчитанный на fbank-фичи.
+            // и подаёт raw samples в энкодер, рассчитанный на mel-фичи.
             config.model_config.model_type = Some("nemo_transducer".to_string());
-            // GigaAM-V3 RNN-T обучен на 80-мерных fbank-фичах с 25ms окном /
-            // 10ms шагом. Задаём явно на случай, если дефолты отличаются.
+            // GigaAM-V3 RNN-T обучен на 64-мерных mel-фичах с 25ms окном /
+            // 10ms шагом (FFT=320, hop=160). Задаём явно.
             config.feat_config.sample_rate = sample_rate;
-            config.feat_config.feature_dim = 80;
+            config.feat_config.feature_dim = 64;
 
             // beam > 1 → modified_beam_search; beam == 1 → дефолт (greedy_search).
             let beam = beam_size.clamp(1, 64);
@@ -170,9 +170,9 @@ pub async fn transcribe(
             let mut all_durations: Vec<f32> = Vec::new();
 
             // SileroVad через sherpa-onnx: каждый сегмент 0.25-30 сек речи
-            // сразу идёт в GigaAM как один chunk (1500-3000 fbank-фреймов
+            // сразу идёт в GigaAM как один chunk (1500-3000 mel-фреймов
             // контекста). Группировка не нужна — SileroVad segments уже
-            // оптимального размера (как в gigaam.transcribe_longform / govorun-lite).
+            // оптимального размера (как в gigaam.transcribe_longform / gigastt).
             // `sample_rate` is i32 в sherpa_onnx::Wave; VAD принимает u32.
             let chunks: Vec<(usize, usize)> =
                 super::segmentation::find_speech_segments(&samples, sample_rate as u32);
@@ -379,7 +379,7 @@ pub fn discover_model_files(model_dir: &str) -> AppResult<(PathBuf, PathBuf, Pat
             && name_str.ends_with(".onnx")
         {
             joiner = Some(entry.path());
-        } else if name_str.ends_with("tokens.txt") {
+        } else if name_str.ends_with("tokens.txt") || name_str.ends_with("vocab.txt") {
             tokens = Some(entry.path());
         }
     }
@@ -390,8 +390,9 @@ pub fn discover_model_files(model_dir: &str) -> AppResult<(PathBuf, PathBuf, Pat
         decoder.ok_or_else(|| AppError::Asr(format!("no *decoder*.onnx in {}", dir.display())))?;
     let joiner =
         joiner.ok_or_else(|| AppError::Asr(format!("no *joiner*.onnx in {}", dir.display())))?;
-    let tokens =
-        tokens.ok_or_else(|| AppError::Asr(format!("no *tokens.txt in {}", dir.display())))?;
+    let tokens = tokens.ok_or_else(|| {
+        AppError::Asr(format!("no *tokens.txt or *vocab.txt in {}", dir.display()))
+    })?;
 
     Ok((encoder, decoder, joiner, tokens))
 }

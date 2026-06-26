@@ -2,7 +2,7 @@
 //!
 //! Заменяет energy-VAD: каждый сегмент (0.25-30 сек речи) идёт в GigaAM
 //! как **один** chunk. Модель получает 25-3000 fbank-фреймов контекста —
-//! как в официальной `gigaam.transcribe_longform` и в amidexe/govorun-lite.
+//! как в официальной `gigaam.transcribe_longform` и в ekhodzitsky/gigastt.
 //!
 //! Требует `silero_vad.onnx` (~629 KB) в `<data_root>/models/`.
 //! Скачивается тем же `models::download_all` механизмом.
@@ -16,7 +16,7 @@ use std::path::PathBuf;
 /// Мин. длина сегмента, которую имеет смысл отдавать в GigaAM.
 const MIN_SEGMENT_SAMPLES: usize = 4000; // 0.25 сек @ 16kHz = silero min_speech_duration
 
-/// Параметры SileroVad (как в `govorun-lite/VadRecorder.kt`).
+/// Параметры SileroVad (как в gigastt).
 const VAD_THRESHOLD: f32 = 0.5;
 const VAD_MIN_SILENCE_SEC: f32 = 0.5;
 const VAD_MIN_SPEECH_SEC: f32 = 0.25;
