@@ -15,47 +15,47 @@ use tracing::info;
 
 /// Тег Release'а с моделями GigaAM-V3 rnnt в репо `ekhodzitsky/gigastt`.
 /// При обновлении моделей — bump здесь и перевыпустить Release.
-pub const MODEL_RELEASE_TAG: &str = "models-v3-2026-06-22";
+pub const MODEL_RELEASE_TAG: &str = "model-gigaam-v3";
 
 /// URL до (но не включая) release tag.
-const MODEL_RELEASE_BASE_URL: &str = "https://github.com/ekhodzitsky/gigastt/releases/download";
+const MODEL_RELEASE_BASE_URL: &str = "https://github.com/amidexe/govorun-lite/releases/download";
 
 /// File name as it appears in the release → where it's stored locally.
-/// rnnt голова: 34-token char vocab, WER ~3.55% (vs ~8.6% у e2e_rnnt).
+/// e2e_rnnt голова: 1025-token BPE vocab, пунктуация встроенная.
 const MODEL_FILES: &[&str] = &[
-    "v3_rnnt_encoder_int8.onnx",
-    "v3_rnnt_decoder.onnx",
-    "v3_rnnt_joint.onnx",
-    "v3_vocab.txt",
+    "gigaam_v3_e2e_rnnt_encoder_int8.onnx",
+    "gigaam_v3_e2e_rnnt_decoder.onnx",
+    "gigaam_v3_e2e_rnnt_joint.onnx",
+    "gigaam_v3_e2e_rnnt_tokens.txt",
     "silero_vad.onnx",
 ];
 
 /// Sanity-check: файл меньше — считаем битым и перекачиваем.
 const MIN_FILE_SIZES: &[(&str, u64)] = &[
-    ("v3_rnnt_encoder_int8.onnx", 100_000_000), // ~215 MB INT8
-    ("v3_rnnt_decoder.onnx", 1_000_000),        // ~4.4 MB
-    ("v3_rnnt_joint.onnx", 500_000),            // ~2.6 MB
-    ("v3_vocab.txt", 1_000),                    // ~1 KB (34 tokens)
-    ("silero_vad.onnx", 500_000),               // ~629 KB
+    ("gigaam_v3_e2e_rnnt_encoder_int8.onnx", 100_000_000), // ~319 MB
+    ("gigaam_v3_e2e_rnnt_decoder.onnx", 1_000_000),        // ~4.6 MB
+    ("gigaam_v3_e2e_rnnt_joint.onnx", 500_000),            // ~2.7 MB
+    ("gigaam_v3_e2e_rnnt_tokens.txt", 1_000),              // ~13 KB
+    ("silero_vad.onnx", 500_000),                          // ~629 KB
 ];
 
 /// SHA256 (hex) для каждого файла. Пустая строка = пропустить проверку.
 const MODELS_SHA256: &[(&str, &str)] = &[
     (
-        "v3_rnnt_encoder_int8.onnx",
-        "c52665e9d96c4ca3a153c063d2ee9af6c567fe2975ca50fd038b75bbf2f60e7f",
+        "gigaam_v3_e2e_rnnt_encoder_int8.onnx",
+        "2cac62d0c270bd128f898f2be1a2d34780d524a6e9483888ebac7b00f97410f1",
     ),
     (
-        "v3_rnnt_decoder.onnx",
-        "443c3b7bd42b453611618135d6b1e7d9467e5dd97c8a68501da4aa355750c0da",
+        "gigaam_v3_e2e_rnnt_decoder.onnx",
+        "781971998e6a355d6a714f6932a30eab295e7ba0d14fd7e0f78c83b87e811860",
     ),
     (
-        "v3_rnnt_joint.onnx",
-        "fd1d02f45c2ad3d6b67cc149811ad794ab4b020ed49a0a9e2790a8619d1cddd8",
+        "gigaam_v3_e2e_rnnt_joint.onnx",
+        "602ff7017a93311aad34df1437c8d7f49911353c13d6eae7a6ee7b041339465c",
     ),
     (
-        "v3_vocab.txt",
-        "a9143c30844d3c0bee3e9e927e4084774eb1b9eeaafc473b2c4521e4911a7c07",
+        "gigaam_v3_e2e_rnnt_tokens.txt",
+        "7ddf22514c42c531358182c81446a8159771e9921019f09ae743ea622d40221d",
     ),
 ];
 

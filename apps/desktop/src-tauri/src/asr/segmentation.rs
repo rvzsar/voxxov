@@ -1,20 +1,25 @@
 //! Сегментация аудио на речевые сегменты через **SileroVad** (sherpa-onnx built-in).
 //!
-//! Заменяет energy-VAD: каждый сегмент (0.25-30 сек речи) идёт в GigaAM
-//! как **один** chunk. Модель получает 25-3000 fbank-фреймов контекста —
-//! как в официальной `gigaam.transcribe_longform` и в ekhodzitsky/gigastt.
+//! Стратегия (как в GigaAM `transcribe_longform` / `segment_audio_file`):
+//! 1. SileroVad находит речевые сегменты (0.25-30 сек)
+//! 2. Сегменты склеиваются в чанки по 15-22 секунды (оптимально для GigaAM)
+//! 3. Сегменты длиннее 30 сек разрезаются принудительно
 //!
-//! Требует `silero_vad.onnx` (~629 KB) в `<data_root>/models/`.
-//! Скачивается тем же `models::download_all` механизмом.
-//!
-//! Graceful fallback: если VAD-модель не найдена, возвращаем пустой
-//! `Vec` (юзер увидит warning в логе и warning в UI — без падений).
+//! Модель обучена на аудио ~15-25 сек. Слишком короткие сегменты (< 5 сек)
+//! дают мусор — у модели нет контекста.
 
 use sherpa_onnx::{SileroVadModelConfig, TenVadModelConfig, VadModelConfig, VoiceActivityDetector};
 use std::path::PathBuf;
 
 /// Мин. длина сегмента, которую имеет смысл отдавать в GigaAM.
 const MIN_SEGMENT_SAMPLES: usize = 4000; // 0.25 сек @ 16kHz = silero min_speech_duration
+
+/// Параметры склейки сегментов (из GigaAM `segment_audio_file`).
+/// Модель обучена на аудио ~15-25 сек; оптимальный диапазон чанков.
+const MERGE_MAX_SEC: f32 = 22.0; // максимальная длина чанка
+const MERGE_MIN_SEC: f32 = 15.0; // минимальная длина для закрытия чанка
+const MERGE_STRICT_LIMIT_SEC: f32 = 30.0; // жёсткий лимит — длиннее режем
+const MERGE_THRESHOLD_SEC: f32 = 0.2; // минимальный осмысленный сегмент
 
 /// Параметры SileroVad (как в gigastt).
 const VAD_THRESHOLD: f32 = 0.5;
@@ -104,7 +109,89 @@ pub fn find_speech_segments(samples: &[f32], sample_rate: u32) -> Vec<(usize, us
         vad.reset();
     }
 
-    segments
+    // Склеиваем VAD-сегменты в чанки по 15-22 сек (как в GigaAM transcribe_longform)
+    merge_segments(&segments, sample_rate, samples.len())
+}
+
+/// Склеить VAD-сегменты в чанки по 15-22 секунды (как в GigaAM `segment_audio_file`).
+///
+/// Модель обучена на аудио ~15-25 сек. Слишком короткие сегменты дают мусор.
+/// Сегменты длиннее 30 сек разрезаются принудительно.
+fn merge_segments(
+    raw: &[(usize, usize)],
+    sample_rate: u32,
+    _total_samples: usize,
+) -> Vec<(usize, usize)> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let sr = sample_rate as f32;
+    let max_samples = (MERGE_MAX_SEC * sr) as usize;
+    let min_samples = (MERGE_MIN_SEC * sr) as usize;
+    let strict_limit_samples = (MERGE_STRICT_LIMIT_SEC * sr) as usize;
+    let threshold_samples = (MERGE_THRESHOLD_SEC * sr) as usize;
+
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    let mut curr_start: usize = 0;
+    let mut curr_end: usize = 0;
+    let mut curr_duration: usize = 0;
+
+    for &(seg_start, seg_end) in raw {
+        if curr_duration == 0 {
+            curr_start = seg_start;
+            curr_end = seg_end;
+            curr_duration = seg_end - seg_start;
+            continue;
+        }
+
+        let seg_len = seg_end - seg_start;
+        // Закрыть текущий чанк если:
+        // - добавление сегмента превысит max_duration
+        // - текущий чанк уже > min_duration
+        if curr_duration > threshold_samples
+            && (curr_duration + seg_len > max_samples || curr_duration > min_samples)
+        {
+            push_chunk(&mut merged, curr_start, curr_end, strict_limit_samples);
+            curr_start = seg_start;
+            curr_end = seg_end;
+            curr_duration = seg_len;
+        } else {
+            curr_end = seg_end;
+            curr_duration = curr_end - curr_start;
+        }
+    }
+
+    if curr_duration > threshold_samples {
+        push_chunk(&mut merged, curr_start, curr_end, strict_limit_samples);
+    }
+
+    tracing::info!(
+        "ASR merge: {} VAD segments -> {} chunks (max={:.0}s, min={:.0}s)",
+        raw.len(),
+        merged.len(),
+        MERGE_MAX_SEC,
+        MERGE_MIN_SEC
+    );
+
+    merged
+}
+
+/// Запушить чанк, разрезав на части если превышает strict_limit.
+fn push_chunk(out: &mut Vec<(usize, usize)>, start: usize, end: usize, strict_limit: usize) {
+    let len = end - start;
+    if len <= strict_limit {
+        out.push((start, end));
+        return;
+    }
+    // Разрезаем на равные части
+    let n_parts = (len / strict_limit) + 1;
+    let part_len = len / n_parts;
+    let mut pos = start;
+    for _ in 0..n_parts {
+        let chunk_end = (pos + part_len).min(end);
+        out.push((pos, chunk_end));
+        pos = chunk_end;
+    }
 }
 
 /// Сливает готовые VAD-сегменты в `out`.

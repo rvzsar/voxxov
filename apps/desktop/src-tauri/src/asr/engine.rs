@@ -135,7 +135,7 @@ pub async fn transcribe(
             // GigaAM-V3 RNN-T обучен на 64-мерных mel-фичах с 25ms окном /
             // 10ms шагом (FFT=320, hop=160). Задаём явно.
             config.feat_config.sample_rate = sample_rate;
-            config.feat_config.feature_dim = 64;
+            config.feat_config.feature_dim = 80;
 
             // beam > 1 → modified_beam_search; beam == 1 → дефолт (greedy_search).
             let beam = beam_size.clamp(1, 64);
@@ -379,7 +379,7 @@ pub fn discover_model_files(model_dir: &str) -> AppResult<(PathBuf, PathBuf, Pat
             && name_str.ends_with(".onnx")
         {
             joiner = Some(entry.path());
-        } else if name_str.ends_with("tokens.txt") || name_str.ends_with("vocab.txt") {
+        } else if name_str.ends_with("tokens.txt") {
             tokens = Some(entry.path());
         }
     }
