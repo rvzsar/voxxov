@@ -35,7 +35,7 @@ URL or local file
 
 The pipeline matches [gigaam.transcribe_longform](https://github.com/salute-developers/GigaAM) and [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) architecture — same model, same config, same chunking strategy.
 
-**WER**: rnnt head achieves ~3.55% on clean read (vs ~8.6% for e2e_rnnt). Output is lowercase without punctuation; add post-processing if needed.
+**WER**: e2e_rnnt head with punctuation and casing built into the model.
 
 ## bench.json — per-job performance metrics
 
@@ -128,12 +128,12 @@ Voxxov/
 
 **GPL-3.0-only** — see [LICENSE](./LICENSE).
 
-GigaAM model files (rnnt head, INT8 quantized) are downloaded from [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) releases. The GigaAM model itself is developed by [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) under a **non-commercial license** — commercial use requires a separate agreement with the rights holder.
+GigaAM model files are downloaded from [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite) releases. The GigaAM model itself is developed by [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) under a **non-commercial license** — commercial use requires a separate agreement with the rights holder.
 
 ## Credits
 
 - [GigaAM](https://github.com/salute-developers/GigaAM) — speech recognition model, Salute Developers (Sber)
-- [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) — GigaAM-V3 rnnt model file packaging, INT8 quantization and release hosting
+- [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) — GigaAM parameter research and benchmarks
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (csukuangfj) — ONNX runtime, static-linked C library for ASR inference (Apache-2.0)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — video downloader (Unlicense)
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) — ffmpeg Windows binaries (GPL)

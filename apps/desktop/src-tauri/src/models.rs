@@ -1,11 +1,10 @@
-//! Auto-download моделей GigaAM-V3 rnnt с GitHub Releases.
+//! Auto-download моделей GigaAM-V3 e2e_rnnt с GitHub Releases.
 //!
 //! При первом запуске (если `model_path` пустой) — качаем 4 файла
-//! (`v3_rnnt_encoder_int8.onnx`, `v3_rnnt_decoder.onnx`, `v3_rnnt_joint.onnx`, `v3_vocab.txt`)
+//! (`gigaam_v3_e2e_rnnt_{encoder_int8,decoder,joint}.onnx` + `tokens.txt`)
 //! + `silero_vad.onnx` в `<exe_dir>/models/`. Если все файлы уже есть — skip.
 //!
-//! rnnt голова даёт WER ~3.55% (vs ~8.6% у e2e_rnnt) — значительно лучше качество.
-//! Выдаёт lowercase без пунктуации; при необходимости добавить постпроцессинг.
+//! e2e_rnnt голова: пунктуация и регистр встроены в модель.
 
 use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
@@ -13,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing::info;
 
-/// Тег Release'а с моделями GigaAM-V3 rnnt в репо `ekhodzitsky/gigastt`.
+/// Тег Release'а с моделями GigaAM-V3 в репо `amidexe/govorun-lite`.
 /// При обновлении моделей — bump здесь и перевыпустить Release.
 pub const MODEL_RELEASE_TAG: &str = "model-gigaam-v3";
 

@@ -35,7 +35,7 @@ URL или локальный файл
 
 Пайплайн повторяет архитектуру [gigaam.transcribe_longform](https://github.com/salute-developers/GigaAM) и [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) — та же модель, тот же конфиг, та же стратегия чанкинга.
 
-**WER**: rnnt голова даёт ~3.55% на чистом чтении (vs ~8.6% у e2e_rnnt). Выход — lowercase без пунктуации; при необходимости добавить постпроцессинг.
+**WER**: e2e_rnnt голова с пунктуацией и регистром встроенными в модель.
 
 ## bench.json — перформанс-метрики по задаче
 
@@ -128,12 +128,12 @@ Voxxov/
 
 **GPL-3.0-only** — см. [LICENSE](./LICENSE).
 
-Файлы модели GigaAM (rnnt голова, INT8 квантизация) скачиваются из релизов [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt). Сама модель GigaAM разработана [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) под **некоммерческой лицензией** — для коммерческого использования требуется отдельное соглашение с правообладателем.
+Файлы модели GigaAM скачиваются из релизов [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite). Сама модель GigaAM разработана [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) под **некоммерческой лицензией** — для коммерческого использования требуется отдельное соглашение с правообладателем.
 
 ## Благодарности
 
 - [GigaAM](https://github.com/salute-developers/GigaAM) — модель распознавания речи, Salute Developers (Sber)
-- [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) — упаковка файлов модели GigaAM-V3 rnnt, INT8 квантизация и хостинг релизов
+- [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) — исследование параметров GigaAM и бенчмарки
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (csukuangfj) — ONNX-рантайм, статически слинкованная C-библиотека для ASR-инференса (Apache-2.0)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — загрузчик видео (Unlicense)
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) — Windows-бинари ffmpeg (GPL)

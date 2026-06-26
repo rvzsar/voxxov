@@ -132,8 +132,8 @@ pub async fn transcribe(
             // с sherpa-onnx 1.13). Без этого поля sherpa-onnx не знает, что это NeMo,
             // и подаёт raw samples в энкодер, рассчитанный на mel-фичи.
             config.model_config.model_type = Some("nemo_transducer".to_string());
-            // GigaAM-V3 RNN-T обучен на 64-мерных mel-фичах с 25ms окном /
-            // 10ms шагом (FFT=320, hop=160). Задаём явно.
+            // GigaAM-V3 RNN-T обучен на 80-мерных fbank-фичах с 25ms окном /
+            // 10ms шагом. Задаём явно.
             config.feat_config.sample_rate = sample_rate;
             config.feat_config.feature_dim = 80;
 
@@ -150,29 +150,16 @@ pub async fn transcribe(
                 )
             })?;
 
-            // CHUNK_SAMPLES — hard limit для одного decode-вызова.
-            // sherpa-onnx 1.13 для GigaAM применяет 64-dim fbank @ 25ms/10ms
-            // (см. OfflineRecognizerTransducerNeMoImpl::PostInit). Тогда
-            // 30s @ 16kHz = 3000 fbank-фреймов < 5000 (positional max). Если
-            // fbank по какой-то причине не применяется — упрёмся в max_seq_len
-            // (тогда откатить CHUNK_SAMPLES до 4_000).
-            //
-            // Размер чанков определяется официальным алгоритмом GigaAM
-            // (`gigaam.transcribe_longform` / `vad_utils.py`): min=15s,
-            // max=22s. На каждом чанке модель получает 1500-2200 fbank-фреймов
-            // — в 5-7× больше, чем раньше (3.1s = 310 фреймов), что и даёт
-            // нормальное качество.
-            const CHUNK_SAMPLES: usize = 480_000;
+            // Чанки определяются VAD + merge_segments в segmentation.rs
+            // (15-22 сек, как в GigaAM transcribe_longform).
             let total = samples.len();
             let mut all_text = String::new();
             let mut all_tokens: Vec<String> = Vec::new();
             let mut all_timestamps: Vec<f32> = Vec::new();
             let mut all_durations: Vec<f32> = Vec::new();
 
-            // SileroVad через sherpa-onnx: каждый сегмент 0.25-30 сек речи
-            // сразу идёт в GigaAM как один chunk (1500-3000 mel-фреймов
-            // контекста). Группировка не нужна — SileroVad segments уже
-            // оптимального размера (как в gigaam.transcribe_longform / gigastt).
+            // SileroVad + merge_segments: сегменты склеиваются в чанки
+            // по 15-22 сек (как в GigaAM transcribe_longform).
             // `sample_rate` is i32 в sherpa_onnx::Wave; VAD принимает u32.
             let chunks: Vec<(usize, usize)> =
                 super::segmentation::find_speech_segments(&samples, sample_rate as u32);

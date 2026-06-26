@@ -12,7 +12,7 @@ use sherpa_onnx::{SileroVadModelConfig, TenVadModelConfig, VadModelConfig, Voice
 use std::path::PathBuf;
 
 /// Мин. длина сегмента, которую имеет смысл отдавать в GigaAM.
-const MIN_SEGMENT_SAMPLES: usize = 4000; // 0.25 сек @ 16kHz = silero min_speech_duration
+const MIN_SEGMENT_SAMPLES: usize = 4000; // 0.25 сек @ 16kHz
 
 /// Параметры склейки сегментов (из GigaAM `segment_audio_file`).
 /// Модель обучена на аудио ~15-25 сек; оптимальный диапазон чанков.
@@ -36,9 +36,8 @@ const VAD_BUFFER_SEC: f32 = 60.0;
 /// чанк самодостаточен, cross-chunk context не теряется на реальной речи.
 const VAD_CHUNK_SEC: usize = 30;
 
-/// Возвращает список пар `(start_sample, end_sample)` для каждого
-/// речевого сегмента от SileroVad. Сегменты по 0.25-30 сек — сразу
-/// пригодны для ASR как один chunk.
+/// Возвращает список пар `(start_sample, end_sample)` для склеенных
+/// речевых чанков. VAD-сегменты склеиваются в чанки по 15-22 сек.
 pub fn find_speech_segments(samples: &[f32], sample_rate: u32) -> Vec<(usize, usize)> {
     if samples.is_empty() || sample_rate == 0 {
         return Vec::new();
@@ -110,18 +109,14 @@ pub fn find_speech_segments(samples: &[f32], sample_rate: u32) -> Vec<(usize, us
     }
 
     // Склеиваем VAD-сегменты в чанки по 15-22 сек (как в GigaAM transcribe_longform)
-    merge_segments(&segments, sample_rate, samples.len())
+    merge_segments(&segments, sample_rate)
 }
 
 /// Склеить VAD-сегменты в чанки по 15-22 секунды (как в GigaAM `segment_audio_file`).
 ///
 /// Модель обучена на аудио ~15-25 сек. Слишком короткие сегменты дают мусор.
 /// Сегменты длиннее 30 сек разрезаются принудительно.
-fn merge_segments(
-    raw: &[(usize, usize)],
-    sample_rate: u32,
-    _total_samples: usize,
-) -> Vec<(usize, usize)> {
+fn merge_segments(raw: &[(usize, usize)], sample_rate: u32) -> Vec<(usize, usize)> {
     if raw.is_empty() {
         return Vec::new();
     }
