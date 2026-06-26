@@ -209,7 +209,7 @@ fn drain_segments(
     while !vad.is_empty() {
         if let Some(seg) = vad.front() {
             let seg_start = absolute_offset + seg.start() as usize;
-            let seg_len = seg.n() as usize;
+            let seg_len = seg.n().max(0) as usize;
             let seg_end = (seg_start + seg_len).min(chunk_end);
             if seg_end > seg_start && seg_end - seg_start >= MIN_SEGMENT_SAMPLES {
                 out.push((seg_start, seg_end));
@@ -250,12 +250,68 @@ mod tests {
 
     #[test]
     fn missing_vad_model_returns_empty_without_panic() {
-        // Модель silero_vad.onnx не установлена в тесте → graceful return.
-        // (Тест проходит в любом окружении: с моделью вернёт сегменты, без — пусто.)
         let samples = vec![0.0f32; 16000];
         let segs = find_speech_segments(&samples, 16000);
-        // Либо пусто (модель не найдена), либо не-пусто (модель нашлась в реальной FS).
-        // Главное — не паникует.
         let _ = segs;
+    }
+
+    // --- merge_segments tests ---
+
+    #[test]
+    fn merge_empty() {
+        assert!(merge_segments(&[], 16000).is_empty());
+    }
+
+    #[test]
+    fn merge_single_short_segment_passthrough() {
+        // 10s > threshold 0.2s — passes through
+        let raw = vec![(0, 160000)];
+        let merged = merge_segments(&raw, 16000);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0], (0, 160000));
+    }
+
+    #[test]
+    fn merge_below_threshold_dropped() {
+        // 0.1s < threshold 0.2s — dropped
+        let raw = vec![(0, 1600)];
+        let merged = merge_segments(&raw, 16000);
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn merge_multiple_short_concatenated() {
+        let sr: usize = 16000;
+        let raw = vec![(0, 5 * sr), (6 * sr, 10 * sr), (11 * sr, 16 * sr)];
+        let merged = merge_segments(&raw, sr as u32);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0], (0, 16 * sr));
+    }
+
+    #[test]
+    fn merge_splits_at_max_duration() {
+        let sr: usize = 16000;
+        let raw = vec![(0, 12 * sr), (12 * sr, 24 * sr)];
+        let merged = merge_segments(&raw, sr as u32);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn merge_splits_at_min_duration() {
+        let sr: usize = 16000;
+        let raw = vec![(0, 16 * sr), (16 * sr, 18 * sr)];
+        let merged = merge_segments(&raw, sr as u32);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn merge_strict_limit_splits_long() {
+        let sr: usize = 16000;
+        let raw = vec![(0, 45 * sr)];
+        let merged = merge_segments(&raw, sr as u32);
+        assert!(merged.len() >= 2);
+        for &(s, e) in &merged {
+            assert!((e - s) / sr <= 30);
+        }
     }
 }

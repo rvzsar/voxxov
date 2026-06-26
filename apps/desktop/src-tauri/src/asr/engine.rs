@@ -212,7 +212,7 @@ pub async fn transcribe(
 
                 // Diagnostic: log each chunk result
                 let text_preview: String = chunk_text.chars().take(80).collect();
-                tracing::info!(
+                tracing::debug!(
                     "ASR chunk[{}/{}]: samples {}..{} ({:.2}s) tokens={} text={:?}",
                     chunk_idx,
                     total_chunks,
