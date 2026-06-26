@@ -69,6 +69,16 @@
     job.stage === 'cancelled' ? 'muted' : 'info',
   );
 
+  const stageIcon = $derived(
+    job.stage === 'fetching_metadata' ? '🔍' :
+    job.stage === 'downloading' ? '⬇️' :
+    job.stage === 'extracting_audio' ? '🎵' :
+    job.stage === 'transcribing' ? '🎙️' :
+    job.stage === 'done' ? '✅' :
+    job.stage === 'failed' ? '❌' :
+    job.stage === 'cancelled' ? '⏹️' : '⏳'
+  );
+
   const host = $derived.by(() => {
     if (job.source === 'local_file') return '';
     try { return new URL(job.url).hostname; } catch { return ''; }
@@ -77,13 +87,14 @@
   const createdDate = $derived.by(() => {
     try {
       const d = new Date(job.createdAt);
-      // "21:34" or "21:34 5 мар"
       const today = new Date();
       const sameDay = d.toDateString() === today.toDateString();
       if (sameDay) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
     } catch { return ''; }
   });
+
+  const pctDisplay = $derived(Math.round((job.progress.pct || 0) * 100));
 </script>
 
 <div
@@ -100,13 +111,19 @@
 >
   <div class="top">
     <span class="title">{job.media?.title ?? job.url}</span>
-    <span class="badge {stageClass}">{stageLabel(job.stage)}</span>
+    <span class="badge {stageClass}">{stageIcon} {stageLabel(job.stage)}</span>
   </div>
-  <ProgressBar pct={job.progress.pct} />
+  <div class="progress-row">
+    <ProgressBar pct={job.progress.pct} />
+    <span class="pct">{pctDisplay}%</span>
+  </div>
+  {#if job.progress.label}
+    <div class="label" title={job.progress.label}>{job.progress.label}</div>
+  {/if}
   {#if job.progress.speed || job.progress.eta}
     <div class="speed">
       {#if job.progress.speed}<span class="speed-val">{job.progress.speed}</span>{/if}
-      {#if job.progress.eta}<span class="dim">ETA {job.progress.eta}</span>{/if}
+      {#if job.progress.eta}<span class="eta">ETA {job.progress.eta}</span>{/if}
     </div>
   {/if}
   <div class="meta">
@@ -130,7 +147,7 @@
 
 <style>
   .row {
-    display: flex; flex-direction: column; gap: 4px;
+    display: flex; flex-direction: column; gap: 3px;
     width: 100%; text-align: left;
     background: transparent;
     border: 0; border-left: 2px solid transparent;
@@ -154,14 +171,31 @@
     font-size: 10px; padding: 1px 6px; border-radius: 3px;
     text-transform: uppercase; letter-spacing: 0.04em; flex-shrink: 0;
     background: var(--surface-3);
+    display: flex; align-items: center; gap: 3px;
   }
   .badge.ok { color: var(--ok); }
   .badge.err { color: var(--err); }
   .badge.muted { color: var(--muted); }
   .badge.info { color: var(--accent); }
+  .progress-row { display: flex; align-items: center; gap: 6px; }
+  .pct {
+    font-size: 11px; font-family: var(--mono); min-width: 30px;
+    color: var(--muted); text-align: right;
+  }
+  .label {
+    font-size: 11px; color: var(--fg);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .meta { display: flex; gap: 6px; align-items: center; font-size: 11px; flex-wrap: wrap; }
   .speed { display: flex; gap: 8px; align-items: center; font-size: 11px; }
-  .speed-val { color: var(--accent); font-variant-numeric: tabular-nums; }
+  .speed-val {
+    color: var(--accent); font-variant-numeric: tabular-nums;
+    font-weight: 500;
+  }
+  .eta {
+    color: var(--warn); font-variant-numeric: tabular-nums;
+    font-weight: 500;
+  }
   .dim { color: var(--muted); }
   .date { margin-left: auto; }
   .err { color: var(--err); }
