@@ -281,7 +281,8 @@ pub async fn transcribe(
                 } else {
                     0.0
                 },
-                CHUNK_SAMPLES,
+                // Жёсткий лимит чанка — 30с (см. MERGE_STRICT_LIMIT_SEC в segmentation.rs).
+                sample_rate as usize * 30,
                 total
             );
 
