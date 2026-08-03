@@ -128,7 +128,7 @@ Voxxov/
 
 **GPL-3.0-only** — see [LICENSE](./LICENSE).
 
-GigaAM model files are downloaded from [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite) releases. The GigaAM model itself is developed by [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) under a **non-commercial license** — commercial use requires a separate agreement with the rights holder.
+GigaAM-V3 e2e_rnnt model files are downloaded from the `model-gigaam-v3` release of [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite); `silero_vad.onnx` comes from the official [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) releases. The GigaAM model is developed by [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) and is released under the **MIT license**.
 
 ## Credits
 

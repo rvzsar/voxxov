@@ -1,18 +1,43 @@
 //! Сегментация аудио на речевые сегменты через **SileroVad** (sherpa-onnx built-in).
 //!
 //! Стратегия (как в GigaAM `transcribe_longform` / `segment_audio_file`):
-//! 1. SileroVad находит речевые сегменты (0.25-30 сек)
+//! 1. SileroVad находит речевые сегменты (до 30 сек)
 //! 2. Сегменты склеиваются в чанки по 15-22 секунды (оптимально для GigaAM)
-//! 3. Сегменты длиннее 30 сек разрезаются принудительно
+//! 3. Чанки длиннее 30 сек разрезаются в самом тихом месте (не по центру)
 //!
 //! Модель обучена на аудио ~15-25 сек. Слишком короткие сегменты (< 5 сек)
 //! дают мусор — у модели нет контекста.
+//!
+//! ## Почему не `flush()` + `reset()` на границах чанков
+//!
+//! Ранняя версия кормила VAD кусками по 30 сек и вызывала `flush()` +
+//! `reset()` на каждой границе. Это резало непрерывную речь (лекции,
+//! подкасты) ровно на 30-й секунде — в произвольном месте, часто посреди
+//! слова, и теряло контекст между чанками.
+//!
+//! sherpa-onnx VAD умеет резать длинную речь сам: как только внутренний
+//! буфер превышает `max_speech_duration`, порог поднимается до 0.9 и паузы
+//! до 0.1 сек становятся границами сегментов (см. `AcceptWaveform` в
+//! voice-activity-detector.cc). Поэтому мы кормим его небольшими кусками
+//! (10 сек — чтобы переключение порога сработало в пределах одного куска),
+//! не сбрасываем и не флашим до конца файла, а собираем только завершённые
+//! сегменты. Границы падают на естественные провалы уверенности, а не на
+//! жёсткий таймер.
+//!
+//! `CircularBuffer::Push` при переполнении печатает сообщение и **завершает
+//! процесс** (exit), поэтому буфер должен гарантированно вмещать любой
+//! in-progress сегмент: максимум ~30-40 сек при 10-секундных кормлениях,
+//! берём 120 сек с трёхкратным запасом.
 
 use sherpa_onnx::{SileroVadModelConfig, TenVadModelConfig, VadModelConfig, VoiceActivityDetector};
 use std::path::PathBuf;
 
-/// Мин. длина сегмента, которую имеет смысл отдавать в GigaAM.
-const MIN_SEGMENT_SAMPLES: usize = 4000; // 0.25 сек @ 16kHz
+/// Минимальный сегмент, который имеет смысл отдавать в GigaAM.
+/// Официальный `segment_audio_file` использует `min_duration_on: 0.0`
+/// (pyannote VAD pipeline) — короткие реплики («ага», «угу») не теряются.
+/// SileroVad сам фильтрует всё короче `min_speech_duration` (0.25с),
+/// поэтому здесь достаточно технического floor'а от 0-длины.
+const MIN_SEGMENT_SAMPLES: usize = 160; // 0.01 сек @ 16kHz
 
 /// Параметры склейки сегментов (из GigaAM `segment_audio_file`).
 /// Модель обучена на аудио ~15-25 сек; оптимальный диапазон чанков.
@@ -27,14 +52,16 @@ const VAD_MIN_SILENCE_SEC: f32 = 0.5;
 const VAD_MIN_SPEECH_SEC: f32 = 0.25;
 const VAD_WINDOW_SIZE: i32 = 512;
 const VAD_MAX_SPEECH_SEC: f32 = 30.0;
-/// Размер rolling-буфера VAD (секунды). Должен быть > VAD_CHUNK_SEC.
-const VAD_BUFFER_SEC: f32 = 60.0;
-/// Размер чанка, которым feed'им VAD за один проход. МЕНЬШЕ VAD_BUFFER_SEC —
-/// иначе circular buffer sherpa-onnx переполнится и OOM-крашнет процесс
-/// (см. 2286d88 followup: 2 чанка по 30s без reset уже забивают 60s буфер,
-/// третий push = overflow). 30s выбран как max_speech_duration — каждый
-/// чанк самодостаточен, cross-chunk context не теряется на реальной речи.
-const VAD_CHUNK_SEC: usize = 30;
+/// Размер rolling-буфера VAD (секунды). Должен с большим запасом
+/// вмещать максимальный in-progress сегмент (~40 сек, см. модульный док),
+/// иначе `CircularBuffer::Push` убьёт процесс при переполнении.
+const VAD_BUFFER_SEC: f32 = 120.0;
+/// Размер куска, которым feed'им VAD за один проход (секунды).
+/// Маленький кусок — чтобы встроенный auto-split sherpa-onnx (порог 0.9,
+/// когда буфер > `max_speech_duration`) сработал сразу после 30 сек
+/// непрерывной речи, а не спустя ещё 30 сек кормлений. Без reset'а
+/// и mid-stream flush'а — иначе речь режется по таймеру, посреди слова.
+const VAD_FEED_SEC: usize = 10;
 
 /// Возвращает список пар `(start_sample, end_sample)` для склеенных
 /// речевых чанков. VAD-сегменты склеиваются в чанки по 15-22 сек.
@@ -80,43 +107,33 @@ pub fn find_speech_segments(samples: &[f32], sample_rate: u32) -> Vec<(usize, us
         }
     };
 
-    // Chunked processing: sherpa-onnx 1.13 VAD **не** auto-drain'ит
-    // circular buffer — он растёт на каждом push и переполняется при
-    // > VAD_BUFFER_SEC (60s) входных данных, OOM-крашит процесс.
-    // Решение: feed'им по VAD_CHUNK_SEC (30s) и `vad.reset()` между
-    // чанками. reset() теряет cross-chunk VAD context, но
-    // max_speech_duration=30s уже ограничивает любой сегмент длиной
-    // VAD_CHUNK_SEC — каждый чанк самодостаточен.
-    let chunk_samples = sample_rate as usize * VAD_CHUNK_SEC;
+    // Streaming-паттерн без reset/flush на границах чанков (см. док модуля):
+    // кормим куски по VAD_FEED_SEC, забираем только завершённые сегменты,
+    // `flush()` — один раз в конце файла. Auto-split sherpa-onnx режет
+    // непрерывную речь на естественных провалах уверенности, а не по
+    // жёсткому таймеру — слова на границах не разрезаются.
+    let chunk_samples = sample_rate as usize * VAD_FEED_SEC;
     let mut segments: Vec<(usize, usize)> = Vec::new();
 
     for chunk_start in (0..samples.len()).step_by(chunk_samples) {
         let chunk_end = (chunk_start + chunk_samples).min(samples.len());
-        let chunk = &samples[chunk_start..chunk_end];
-
-        // Feed whole chunk at once (sherpa-onnx internal windows it).
-        vad.accept_waveform(chunk);
-        drain_segments(&vad, chunk_start, chunk_end, &mut segments);
-
-        // Flush: VAD удерживает последние min_silence_duration секунд в
-        // буфере ожидая «может ещё речь». flush() форсирует эмиссию.
-        vad.flush();
-        drain_segments(&vad, chunk_start, chunk_end, &mut segments);
-
-        // Reset: освобождает circular buffer. Без него 2-й чанк уже
-        // переполнит буфер (VAD_CHUNK_SEC + VAD_CHUNK_SEC > VAD_BUFFER_SEC).
-        vad.reset();
+        vad.accept_waveform(&samples[chunk_start..chunk_end]);
+        drain_segments(&vad, chunk_end, &mut segments);
     }
 
+    // Неоконченная речь в конце файла: flush форсирует её эмиссию.
+    vad.flush();
+    drain_segments(&vad, samples.len(), &mut segments);
+
     // Склеиваем VAD-сегменты в чанки по 15-22 сек (как в GigaAM transcribe_longform)
-    merge_segments(&segments, sample_rate)
+    merge_segments(samples, &segments, sample_rate)
 }
 
 /// Склеить VAD-сегменты в чанки по 15-22 секунды (как в GigaAM `segment_audio_file`).
 ///
 /// Модель обучена на аудио ~15-25 сек. Слишком короткие сегменты дают мусор.
-/// Сегменты длиннее 30 сек разрезаются принудительно.
-fn merge_segments(raw: &[(usize, usize)], sample_rate: u32) -> Vec<(usize, usize)> {
+/// Сегменты длиннее 30 сек разрезаются в самом тихом месте (не по центру).
+fn merge_segments(samples: &[f32], raw: &[(usize, usize)], sample_rate: u32) -> Vec<(usize, usize)> {
     if raw.is_empty() {
         return Vec::new();
     }
@@ -146,7 +163,7 @@ fn merge_segments(raw: &[(usize, usize)], sample_rate: u32) -> Vec<(usize, usize
         if curr_duration > threshold_samples
             && (curr_duration + seg_len > max_samples || curr_duration > min_samples)
         {
-            push_chunk(&mut merged, curr_start, curr_end, strict_limit_samples);
+            push_chunk(&mut merged, curr_start, curr_end, strict_limit_samples, samples);
             curr_start = seg_start;
             curr_end = seg_end;
             curr_duration = seg_len;
@@ -157,7 +174,7 @@ fn merge_segments(raw: &[(usize, usize)], sample_rate: u32) -> Vec<(usize, usize
     }
 
     if curr_duration > threshold_samples {
-        push_chunk(&mut merged, curr_start, curr_end, strict_limit_samples);
+        push_chunk(&mut merged, curr_start, curr_end, strict_limit_samples, samples);
     }
 
     tracing::info!(
@@ -172,45 +189,70 @@ fn merge_segments(raw: &[(usize, usize)], sample_rate: u32) -> Vec<(usize, usize
 }
 
 /// Запушить чанк, разрезав на части если превышает strict_limit.
-fn push_chunk(out: &mut Vec<(usize, usize)>, start: usize, end: usize, strict_limit: usize) {
+/// Разрез делается в самом тихом месте средней части чанка, а не по
+/// центру — иначе границы падают в середину слова.
+fn push_chunk(
+    out: &mut Vec<(usize, usize)>,
+    start: usize,
+    end: usize,
+    strict_limit: usize,
+    samples: &[f32],
+) {
     let len = end - start;
     if len <= strict_limit {
         out.push((start, end));
         return;
     }
-    // Разрезаем на равные части
-    let n_parts = (len / strict_limit) + 1;
-    let part_len = len / n_parts;
-    let mut pos = start;
-    for _ in 0..n_parts {
-        let chunk_end = (pos + part_len).min(end);
-        out.push((pos, chunk_end));
-        pos = chunk_end;
+    let cut = quietest_split_point(samples, start, end);
+    push_chunk(out, start, cut, strict_limit, samples);
+    push_chunk(out, cut, end, strict_limit, samples);
+}
+
+/// Самое тихое место в средней половине `[start, end)`: минимизируем RMS
+/// 100ms-окна (1600 сэмплов @16kHz) с шагом 50ms. Возвращает центр окна.
+/// Ограничение средней половиной не даёт отрезать огрызок у краёв.
+fn quietest_split_point(samples: &[f32], start: usize, end: usize) -> usize {
+    const WINDOW: usize = 1600; // 100ms @ 16kHz
+    let len = end - start;
+    let lo = start + len / 4;
+    let hi = end - len / 4;
+    let mut best = (lo + hi) / 2;
+    let mut best_rms = f32::MAX;
+    let mut w = lo;
+    while w + WINDOW <= hi {
+        let mut sum = 0.0f32;
+        for &s in &samples[w..w + WINDOW] {
+            sum += s * s;
+        }
+        let rms = sum / WINDOW as f32;
+        if rms < best_rms {
+            best_rms = rms;
+            best = w + WINDOW / 2;
+        }
+        w += WINDOW / 2; // шаг 50ms
     }
+    best.clamp(start + 1, end - 1)
 }
 
 /// Сливает готовые VAD-сегменты в `out`.
 ///
-/// Используем `seg.start()` (начало сегмента) и `seg.n()` (длина в сэмплах)
-/// для точного извлечения границ сегмента.
+/// `seg.start()` — глобальный sample offset (детектор не сбрасывался),
+/// `seg.n()` — длина в сэмплах. Конец клампится к `stream_end`.
 ///
 /// Параметры:
 /// - `vad` — VoiceActivityDetector (с непустой очередью segments_).
-/// - `absolute_offset` — глобальный sample offset начала текущего чанка
-///   (прибавляется к локальным VAD-индексам после `reset()`).
-/// - `chunk_end` — глобальный sample offset конца текущего чанка.
+/// - `stream_end` — глобальный sample offset конца уже скормленного аудио.
 /// - `out` — куда пушим (start, end) пары.
 fn drain_segments(
     vad: &VoiceActivityDetector,
-    absolute_offset: usize,
-    chunk_end: usize,
+    stream_end: usize,
     out: &mut Vec<(usize, usize)>,
 ) {
     while !vad.is_empty() {
         if let Some(seg) = vad.front() {
-            let seg_start = absolute_offset + seg.start() as usize;
+            let seg_start = seg.start().max(0) as usize;
             let seg_len = seg.n().max(0) as usize;
-            let seg_end = (seg_start + seg_len).min(chunk_end);
+            let seg_end = (seg_start + seg_len).min(stream_end);
             if seg_end > seg_start && seg_end - seg_start >= MIN_SEGMENT_SAMPLES {
                 out.push((seg_start, seg_end));
             }
@@ -259,14 +301,14 @@ mod tests {
 
     #[test]
     fn merge_empty() {
-        assert!(merge_segments(&[], 16000).is_empty());
+        assert!(merge_segments(&[], &[], 16000).is_empty());
     }
 
     #[test]
     fn merge_single_short_segment_passthrough() {
         // 10s > threshold 0.2s — passes through
         let raw = vec![(0, 160000)];
-        let merged = merge_segments(&raw, 16000);
+        let merged = merge_segments(&[0.0; 160000], &raw, 16000);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0], (0, 160000));
     }
@@ -275,7 +317,7 @@ mod tests {
     fn merge_below_threshold_dropped() {
         // 0.1s < threshold 0.2s — dropped
         let raw = vec![(0, 1600)];
-        let merged = merge_segments(&raw, 16000);
+        let merged = merge_segments(&[], &raw, 16000);
         assert!(merged.is_empty());
     }
 
@@ -283,7 +325,7 @@ mod tests {
     fn merge_multiple_short_concatenated() {
         let sr: usize = 16000;
         let raw = vec![(0, 5 * sr), (6 * sr, 10 * sr), (11 * sr, 16 * sr)];
-        let merged = merge_segments(&raw, sr as u32);
+        let merged = merge_segments(&[0.0; 16 * sr], &raw, sr as u32);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0], (0, 16 * sr));
     }
@@ -292,7 +334,7 @@ mod tests {
     fn merge_splits_at_max_duration() {
         let sr: usize = 16000;
         let raw = vec![(0, 12 * sr), (12 * sr, 24 * sr)];
-        let merged = merge_segments(&raw, sr as u32);
+        let merged = merge_segments(&[0.0; 24 * sr], &raw, sr as u32);
         assert_eq!(merged.len(), 2);
     }
 
@@ -300,7 +342,7 @@ mod tests {
     fn merge_splits_at_min_duration() {
         let sr: usize = 16000;
         let raw = vec![(0, 16 * sr), (16 * sr, 18 * sr)];
-        let merged = merge_segments(&raw, sr as u32);
+        let merged = merge_segments(&[0.0; 18 * sr], &raw, sr as u32);
         assert_eq!(merged.len(), 2);
     }
 
@@ -308,10 +350,27 @@ mod tests {
     fn merge_strict_limit_splits_long() {
         let sr: usize = 16000;
         let raw = vec![(0, 45 * sr)];
-        let merged = merge_segments(&raw, sr as u32);
+        let merged = merge_segments(&[0.0; 45 * sr], &raw, sr as u32);
         assert!(merged.len() >= 2);
         for &(s, e) in &merged {
             assert!((e - s) / sr <= 30);
         }
+    }
+
+    #[test]
+    fn quietest_split_prefers_silence_over_noise() {
+        let sr: usize = 16000;
+        let mut samples = vec![0.1f32; 45 * sr];
+        // Тихий участок в середине (2 сек тишины) — разрез должен попасть в него.
+        let silence_start = 20 * sr;
+        for s in &mut samples[silence_start..silence_start + 2 * sr] {
+            *s = 0.0001;
+        }
+        let cut = quietest_split_point(&samples, 0, 45 * sr);
+        assert!(
+            cut >= silence_start && cut <= silence_start + 2 * sr,
+            "cut {cut} should land inside the silent gap [{silence_start}, {}]",
+            silence_start + 2 * sr
+        );
     }
 }

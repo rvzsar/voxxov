@@ -1,8 +1,10 @@
-//! Auto-download моделей GigaAM-V3 e2e_rnnt с GitHub Releases.
+//! Auto-download моделей GigaAM-V3 e2e_rnnt.
 //!
 //! При первом запуске (если `model_path` пустой) — качаем 4 файла
 //! (`gigaam_v3_e2e_rnnt_{encoder_int8,decoder,joint}.onnx` + `tokens.txt`)
-//! + `silero_vad.onnx` в `<exe_dir>/models/`. Если все файлы уже есть — skip.
+//! из релиза `model-gigaam-v3` репо `amidexe/govorun-lite` + `silero_vad.onnx`
+//! из официальных релизов sherpa-onnx (в релизе моделей VAD-файла нет — 404).
+//! Всё кладётся в `<exe_dir>/models/`. Если все файлы уже есть — skip.
 //!
 //! e2e_rnnt голова: пунктуация и регистр встроены в модель.
 
@@ -18,6 +20,10 @@ pub const MODEL_RELEASE_TAG: &str = "model-gigaam-v3";
 
 /// URL до (но не включая) release tag.
 const MODEL_RELEASE_BASE_URL: &str = "https://github.com/amidexe/govorun-lite/releases/download";
+
+/// SileroVad в релизе `model-gigaam-v3` отсутствует (404) — берём из
+/// официальных релизов sherpa-onnx (`asr-models`).
+const SILERO_VAD_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
 
 /// File name as it appears in the release → where it's stored locally.
 /// e2e_rnnt голова: 1025-token BPE vocab, пунктуация встроенная.
@@ -55,6 +61,10 @@ const MODELS_SHA256: &[(&str, &str)] = &[
     (
         "gigaam_v3_e2e_rnnt_tokens.txt",
         "7ddf22514c42c531358182c81446a8159771e9921019f09ae743ea622d40221d",
+    ),
+    (
+        "silero_vad.onnx",
+        "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
     ),
 ];
 
@@ -148,10 +158,14 @@ where
     let mut downloaded: u64 = 0;
 
     for file in &status.missing {
-        let url = format!(
-            "{}/{}/{}",
-            MODEL_RELEASE_BASE_URL, MODEL_RELEASE_TAG, file.name
-        );
+        let url = if file.name == "silero_vad.onnx" {
+            SILERO_VAD_URL.to_string()
+        } else {
+            format!(
+                "{}/{}/{}",
+                MODEL_RELEASE_BASE_URL, MODEL_RELEASE_TAG, file.name
+            )
+        };
         let target = model_dir.join(&file.name);
         info!(
             "model: downloading {} ({} expected bytes) from {}",
@@ -284,7 +298,7 @@ mod tests {
         let tmp = tempdir_like();
         let s = check_status(&tmp);
         assert_eq!(s.present.len(), 0);
-        assert_eq!(s.missing.len(), 4);
+        assert_eq!(s.missing.len(), 5);
         assert_eq!(s.total_bytes, 0);
         assert!(s.release_url.contains("github.com"));
         assert!(!s.release_tag.is_empty());
@@ -296,7 +310,7 @@ mod tests {
         // 1 KB encoder — ниже порога, уходит в missing.
         std::fs::write(tmp.join("v3_rnnt_encoder_int8.onnx"), vec![0u8; 1024]).unwrap();
         let s = check_status(&tmp);
-        assert_eq!(s.missing.len(), 4);
+        assert_eq!(s.missing.len(), 5);
     }
 
     #[test]
