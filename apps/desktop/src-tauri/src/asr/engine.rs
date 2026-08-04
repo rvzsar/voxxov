@@ -147,11 +147,11 @@ pub async fn transcribe(
             let cache = RECOGNIZER_CACHE.get_or_init(|| Mutex::new((String::new(), None)));
             let cache_guard = cache.lock();
             if cache_guard.0 != cache_key {
-                cache_guard.1 = OfflineRecognizer::create(&config).ok_or_else(|| {
+                cache_guard.1 = Some(OfflineRecognizer::create(&config).ok_or_else(|| {
                     AppError::Asr(
                         "failed to create OfflineRecognizer — check model paths and provider".into(),
                     )
-                })?;
+                })?);
                 cache_guard.0 = cache_key;
             }
             let recognizer = cache_guard.1.as_ref().unwrap();
