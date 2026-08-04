@@ -79,9 +79,10 @@ pub async fn transcribe(
         // Openvino = cpu в текущей версии sherpa-onnx.
         _ => "cpu",
     };
-    // int8 энкодер масштабируется до ~8 потоков на десктопных CPU; дальше
-    // упор в пропускную способность памяти, лишние потоки вредят.
-    let num_threads = num_cpus().min(8);
+    // int8-энкодер bandwidth-bound: 8 потоков оказались медленнее 4 на
+    // том же ролике (RTF 0.089 → 0.164) — больше потоков = thrash кэша.
+    // 4 — проверенный оптимум; на слабых машинах min() урежет сам.
+    let num_threads = num_cpus().min(4);
     let beam_size = cfg.beam_size;
 
     state.log_line(
