@@ -2,6 +2,8 @@
 
 Portable Windows desktop app: download a video (yt-dlp), extract audio (ffmpeg), transcribe Russian speech offline (GigaAM-V3 via sherpa-onnx), export to TXT / SRT / JSON.
 
+The name is a palindrome of its own theme: **VOX** (Latin for "voice") and its mirror **XOV**.
+
 Rust (Tauri 2) + Svelte 5. All data lives next to the `.exe`.
 
 Русская версия: [README.ru.md](./README.ru.md).
