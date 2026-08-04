@@ -3,7 +3,7 @@
   import { jobsStore } from '../stores/jobs.svelte';
   import { api } from '../api';
   import { toast } from '../stores/toast.svelte';
-  import { stageLabel, fmtDuration } from '../format';
+  import { stageLabel, fmtDuration, overallPct } from '../format';
   import ProgressBar from './ProgressBar.svelte';
 
   type Props = { job: Job };
@@ -94,7 +94,29 @@
     } catch { return ''; }
   });
 
-  const pctDisplay = $derived(Math.round((job.progress.pct || 0) * 100));
+  const pctDisplay = $derived(Math.round(overallPct(job) * 100));
+
+  /** Позиция в очереди: сколько не-терминальных задач создано раньше. */
+  const queuePos = $derived(
+    job.stage === 'queued'
+      ? jobsStore.jobs.filter((j) => {
+          if (j.id === job.id) return false;
+          if (j.stage === 'done' || j.stage === 'failed' || j.stage === 'cancelled') return false;
+          return j.createdAt < job.createdAt;
+        }).length
+      : 0
+  );
+
+  async function retryJob(e: MouseEvent) {
+    e.stopPropagation();
+    try {
+      if (job.source === 'url') await jobsStore.add(job.url);
+      else await jobsStore.addLocal(job.url);
+      toast.info('Задача добавлена повторно');
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
 </script>
 
 <div
@@ -110,11 +132,14 @@
   onkeydown={onKey}
 >
   <div class="top">
+    {#if job.media?.thumbnail}
+      <img class="thumb" src={job.media.thumbnail} alt="" loading="lazy" referrerpolicy="no-referrer" />
+    {/if}
     <span class="title">{job.media?.title ?? job.url}</span>
     <span class="badge {stageClass}">{stageIcon} {stageLabel(job.stage)}</span>
   </div>
   <div class="progress-row">
-    <ProgressBar pct={job.progress.pct} />
+    <ProgressBar pct={overallPct(job)} />
     <span class="pct">{pctDisplay}%</span>
   </div>
   {#if job.progress.label}
@@ -126,15 +151,22 @@
       {#if job.progress.eta}<span class="eta">ETA {job.progress.eta}</span>{/if}
     </div>
   {/if}
+  {#if job.stage === 'done' && job.transcriptPreview}
+    <div class="preview" title={job.transcriptPreview}>{job.transcriptPreview.slice(0, 160)}…</div>
+  {/if}
   <div class="meta">
     <span class="dim">{job.source === 'local_file' ? '📁' : ''}{host}</span>
     {#if job.media?.durationSec}<span class="dim">{fmtDuration(job.media.durationSec)}</span>{/if}
+    {#if queuePos > 0}<span class="dim">в очереди: {queuePos}</span>{/if}
     {#if createdDate}<span class="dim date">{createdDate}</span>{/if}
     {#if job.error}<span class="err" title={job.error}>{job.error.slice(0, 60)}</span>{/if}
     {#if isTerminal}
       <button class="action-btn" type="button" onclick={openJobFolder} disabled={revealing} title="Открыть папку с файлами задачи">
         {revealing ? '…' : '📁 папка'}
       </button>
+      {#if job.stage === 'failed' || job.stage === 'cancelled'}
+        <button class="action-btn retry" type="button" onclick={retryJob} title="Повторить ту же задачу">↻ повторить</button>
+      {/if}
       <button class="action-btn save" type="button" onclick={saveJob} disabled={saving} title="Сохранить копию папки в выбранное место">
         {saving ? '…' : '💾 сохранить'}
       </button>
@@ -163,6 +195,11 @@
   .row.failed { border-left-color: var(--err); }
   .row.cancelled { border-left-color: var(--border); opacity: 0.7; }
   .top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .thumb {
+    width: 30px; height: 18px; object-fit: cover;
+    border-radius: 2px; flex-shrink: 0;
+    background: var(--surface-3);
+  }
   .title {
     font-size: 12px; font-weight: 500;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
@@ -196,6 +233,11 @@
     color: var(--warn); font-variant-numeric: tabular-nums;
     font-weight: 500;
   }
+  .preview {
+    font-family: var(--mono); font-size: 10px; color: var(--muted);
+    line-height: 1.45; max-height: 2.9em; overflow: hidden;
+    white-space: pre-wrap; word-break: break-word;
+  }
   .dim { color: var(--muted); }
   .date { margin-left: auto; }
   .err { color: var(--err); }
@@ -217,5 +259,6 @@
   .action-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--fg); }
   .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .action-btn.save:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+  .action-btn.retry:hover:not(:disabled) { color: var(--warn); border-color: var(--warn); }
   .action-btn:focus-visible { outline: 1px solid var(--accent); }
 </style>

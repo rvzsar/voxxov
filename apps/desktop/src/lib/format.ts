@@ -1,4 +1,4 @@
-import type { JobStage } from './types';
+import type { Job, JobStage, JobSource } from './types';
 
 const STAGE_LABELS: Record<JobStage, string> = {
   queued: 'В очереди',
@@ -13,6 +13,40 @@ const STAGE_LABELS: Record<JobStage, string> = {
 
 export function stageLabel(stage: JobStage): string {
   return STAGE_LABELS[stage] ?? stage;
+}
+
+/**
+ * Диапазон общего прогресса задачи для стадии. Стадии весят по-разному:
+ * скачивание — основная часть для URL, ASR — для локальных файлов.
+ * Это позволяет показывать единый непрерывный бар 0..100% вместо того,
+ * чтобы каждая стадия обнулялась и выглядела «зависшей».
+ */
+export function stageRange(stage: JobStage, source: JobSource): [number, number] {
+  if (source === 'local_file') {
+    switch (stage) {
+      case 'extracting_audio': return [0, 0.3];
+      case 'transcribing': return [0.3, 1];
+      default: return [0, 0];
+    }
+  }
+  switch (stage) {
+    case 'fetching_metadata': return [0, 0.05];
+    case 'downloading': return [0.05, 0.7];
+    case 'extracting_audio': return [0.7, 0.75];
+    case 'transcribing': return [0.75, 1];
+    default: return [0, 0];
+  }
+}
+
+/** Общий прогресс задачи 0..1: стадия + прогресс внутри неё. */
+export function overallPct(job: Job): number {
+  if (job.stage === 'done') return 1;
+  if (job.stage === 'failed' || job.stage === 'cancelled') {
+    return Math.min(1, job.progress.pct || 0);
+  }
+  const [a, b] = stageRange(job.stage, job.source);
+  const inner = Math.min(1, Math.max(0, job.progress.pct || 0));
+  return Math.min(1, a + (b - a) * inner);
 }
 
 export function isProbablyUrl(s: string): boolean {

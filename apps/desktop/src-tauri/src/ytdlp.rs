@@ -16,7 +16,7 @@ use crate::state::AppState;
 use crate::types::{JobUpdate, MediaInfo, Progress};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
@@ -135,10 +135,11 @@ impl YtDlpRunner {
 
         let state_for_events = state.clone();
         let job_id_owned = job_id.to_string();
+        let mut tracker = DownloadTracker::new();
         let events_task = tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                forward_progress(&state_for_events, &job_id_owned, &line);
+                forward_progress(&state_for_events, &job_id_owned, &line, &mut tracker);
             }
         });
 
@@ -247,30 +248,196 @@ fn build_args(dl: &DownloadConfig) -> Vec<String> {
 
 // --- stderr parsing ---
 
-fn forward_progress(state: &AppState, job_id: &str, line: &str) {
-    if let Some(prog) = parse_download_progress(line) {
-        // Update the Job's `progress` directly via update_job. The store
-        // re-emits a `JobUpdated` event which the UI merges into `job.progress`.
-        let label = match prog.fragment.as_deref() {
-            Some(f) => format!("Загрузка · {f}"),
-            None => "Загрузка".to_string(),
+/// Отслеживание прогресса много-потокового скачивания.
+///
+/// yt-dlp с `bv*+ba/b` качает несколько потоков подряд (видео, затем аудио),
+/// каждый со своим 0..100% и размером. Общий прогресс — отношение скачанных
+/// байт к сумме размеров всех потоков: он монотонный, а скорость/ETA всегда
+/// актуальны (в отличие от «последней строки», где после 100% видео идёт
+/// 0% аудио).
+struct DownloadTracker {
+    /// Байты, скачанные завершёнными потоками.
+    base_bytes: f64,
+    /// Размер текущего потока (0, пока yt-dlp его не сообщил).
+    cur_size: f64,
+    /// Прогресс текущего потока 0..1.
+    cur_pct: f32,
+    /// Предыдущее значение «скачано байт» + момент — для своей скорости.
+    prev_done: f64,
+    prev_at: Instant,
+    /// Тип текущего потока — для label («видео» / «аудио»).
+    current_is_audio: bool,
+}
+
+impl DownloadTracker {
+    fn new() -> Self {
+        Self {
+            base_bytes: 0.0,
+            cur_size: 0.0,
+            cur_pct: 0.0,
+            prev_done: 0.0,
+            prev_at: Instant::now(),
+            current_is_audio: false,
+        }
+    }
+
+    /// `[download] Destination: <path>` — yt-dlp начал новый поток:
+    /// предыдущий считается завершённым (по факту, а не по 100%).
+    fn on_new_stream(&mut self, dest: &str) {
+        self.base_bytes += self.cur_size * self.cur_pct as f64;
+        self.cur_size = 0.0;
+        self.cur_pct = 0.0;
+        self.current_is_audio = is_audio_ext(dest);
+    }
+
+    fn current_stream_is_audio(&self) -> bool {
+        self.current_is_audio
+    }
+
+    fn total_bytes(&self) -> f64 {
+        self.base_bytes + self.cur_size
+    }
+
+    fn done_bytes(&self) -> f64 {
+        self.base_bytes + self.cur_size * self.cur_pct as f64
+    }
+
+    /// Обновить состояние по строке прогресса.
+    /// Возвращает (общий pct 0..1, собственная скорость B/s — если есть).
+    fn on_progress(&mut self, pct: f32, size: f64, now: Instant) -> (f32, Option<f64>) {
+        if size > 0.0 {
+            self.cur_size = size;
+        }
+        self.cur_pct = pct.max(self.cur_pct);
+        let done = self.done_bytes();
+        let total = self.total_bytes();
+        let overall = if total > 0.0 {
+            (done / total).clamp(0.0, 1.0) as f32
+        } else {
+            self.cur_pct
         };
+        // Собственная скорость: дельта байт между строками. Пригодится,
+        // когда yt-dlp шлёт «Unknown B/s» (троттлинг, фрагменты).
+        let mut own_speed = None;
+        let dt = now.duration_since(self.prev_at).as_secs_f64();
+        if dt >= 0.2 {
+            let d = done - self.prev_done;
+            if d > 0.0 {
+                own_speed = Some(d / dt);
+            }
+        }
+        self.prev_done = done;
+        self.prev_at = now;
+        (overall, own_speed)
+    }
+}
+
+fn is_audio_ext(dest: &str) -> bool {
+    let lower = dest.to_lowercase();
+    ["m4a", "mp3", "opus", "aac", "flac", "wav", "ogg"]
+        .iter()
+        .any(|e| lower.ends_with(e))
+}
+
+fn fmt_speed(bps: f64) -> String {
+    if bps < 1024.0 {
+        format!("{bps:.0} B/s")
+    } else if bps < 1024.0 * 1024.0 {
+        format!("{:.1} KiB/s", bps / 1024.0)
+    } else if bps < 1024.0 * 1024.0 * 1024.0 {
+        format!("{:.1} MiB/s", bps / 1024.0 / 1024.0)
+    } else {
+        format!("{:.1} GiB/s", bps / 1024.0 / 1024.0 / 1024.0)
+    }
+}
+
+fn fmt_eta(secs: f64) -> String {
+    let total = secs.max(0.0) as u64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+fn forward_progress(state: &AppState, job_id: &str, line: &str, tracker: &mut DownloadTracker) {
+    // Новый поток: yt-dlp печатает `[download] Destination: <path>` перед
+    // каждым файлом. Переключаем трекер; прогресс-строку UI увидит уже
+    // с новым label и перекалиброванным общим pct.
+    if let Some(dest) = line.strip_prefix("[download] Destination: ") {
+        tracker.on_new_stream(dest);
+        return;
+    }
+
+    // Склейка потоков ffmpeg'ом: прогресса нет, меняем только label.
+    if line.starts_with("[Merger]") {
         state.update_job(
             job_id,
             JobUpdate {
                 progress: Some(Progress {
-                    pct: prog.pct,
-                    label,
-                    speed: prog.speed,
-                    eta: prog.eta,
+                    pct: 1.0,
+                    label: "Объединяем потоки…".to_string(),
+                    speed: None,
+                    eta: None,
                 }),
                 ..Default::default()
             },
         );
+        return;
     }
-    if line.contains("ERROR:") {
-        state.log_line(job_id, format!("yt-dlp: {line}"));
+
+    let Some(prog) = parse_download_progress(line) else {
+        if line.contains("ERROR:") {
+            state.log_line(job_id, format!("yt-dlp: {line}"));
+        }
+        debug!("yt-dlp stderr: {line}");
+        return;
+    };
+
+    let now = Instant::now();
+    let (overall, own_speed) = tracker.on_progress(prog.pct, prog.size_bytes.unwrap_or(0.0), now);
+
+    let mut label = format!(
+        "Загрузка · {}",
+        if tracker.current_stream_is_audio() {
+            "аудио"
+        } else {
+            "видео"
+        }
+    );
+    if let Some(f) = prog.fragment.as_deref() {
+        label.push_str(&format!(" · frag {f}"));
     }
+
+    // Скорость: yt-dlp, либо наша оценка по байтам («Unknown B/s»).
+    let speed = prog
+        .speed
+        .or_else(|| own_speed.map(fmt_speed));
+    // ETA: yt-dlp (кроме "Unknown"), либо из нашей скорости по остатку.
+    let eta = prog.eta.filter(|e| e != "Unknown").or_else(|| {
+        let s = own_speed?;
+        let remaining = tracker.total_bytes() - tracker.done_bytes();
+        if remaining <= 0.0 {
+            return None;
+        }
+        Some(fmt_eta(remaining / s))
+    });
+
+    state.update_job(
+        job_id,
+        JobUpdate {
+            progress: Some(Progress {
+                pct: overall,
+                label,
+                speed,
+                eta,
+            }),
+            ..Default::default()
+        },
+    );
     debug!("yt-dlp stderr: {line}");
 }
 
@@ -278,9 +445,11 @@ fn forward_progress(state: &AppState, job_id: &str, line: &str) {
 /// `[download]  42.3% of   100.00MiB at    5.20MiB/s ETA 00:12`
 /// `[download]  42.3% of ~  100.00MiB at    5.20MiB/s ETA 00:12 (frag 5/12)`
 /// `[download] 100% of   100.00MiB in 00:19`  ← без speed/ETA
-/// `Unknown B/s` и `ETA --` пропускаются (ещё не известно на этом проходе).
+/// `Unknown B/s` и `ETA Unknown` пропускаются (ещё не известно на этом проходе).
 struct DownloadProgress {
     pct: f32,
+    /// Размер текущего потока в байтах (`of X.XXMiB` / `of ~X.XXMiB`).
+    size_bytes: Option<f64>,
     speed: Option<String>,
     eta: Option<String>,
     fragment: Option<String>,
@@ -297,6 +466,7 @@ fn parse_download_progress(line: &str) -> Option<DownloadProgress> {
 
     let mut out = DownloadProgress {
         pct: (pct_num / 100.0).clamp(0.0, 1.0),
+        size_bytes: parse_total_bytes(after),
         speed: None,
         eta: None,
         fragment: None,
@@ -339,6 +509,33 @@ fn parse_download_progress(line: &str) -> Option<DownloadProgress> {
     }
 
     Some(out)
+}
+
+/// Размер потока из `of 100.00MiB` / `of ~ 100.00MiB` (байты).
+/// `None`, если размер неизвестен (шаблон `downloaded_bytes` без total).
+fn parse_total_bytes(after: &str) -> Option<f64> {
+    let pos = after.find("of ")?;
+    let mut s = after[pos + 3..].trim_start();
+    if let Some(rest) = s.strip_prefix('~') {
+        s = rest.trim_start();
+    }
+    let token: String = s.chars().take_while(|c| !c.is_whitespace()).collect();
+    if token.is_empty() {
+        return None;
+    }
+    let num_end = token
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(token.len());
+    let num: f64 = token[..num_end].parse().ok()?;
+    let mult = match token[num_end..].to_uppercase().as_str() {
+        "B" => 1.0,
+        "KIB" => 1024.0,
+        "MIB" => 1024.0 * 1024.0,
+        "GIB" => 1024.0 * 1024.0 * 1024.0,
+        "TIB" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        _ => 1.0,
+    };
+    Some(num * mult)
 }
 
 // --- auto-download ---

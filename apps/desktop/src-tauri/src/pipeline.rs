@@ -138,7 +138,8 @@ async fn run_inner(
             JobUpdate {
                 media: Some(media.clone()),
                 progress: Some(Progress {
-                    pct: 0.05,
+                    // Стадия завершена; общий прогресс (0-5%) считает frontend.
+                    pct: 1.0,
                     label: format!("Локальный файл: {}", media.title),
                     speed: None,
                     eta: None,
@@ -157,7 +158,8 @@ async fn run_inner(
             JobUpdate {
                 media: Some(media.clone()),
                 progress: Some(Progress {
-                    pct: 0.05,
+                    // Стадия завершена; общий прогресс (0-5%) считает frontend.
+                    pct: 1.0,
                     label: format!("{} · {}", media.title, short_dur(media.duration_sec)),
                     speed: None,
                     eta: None,

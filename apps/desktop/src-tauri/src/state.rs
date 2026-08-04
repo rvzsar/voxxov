@@ -219,10 +219,14 @@ fn apply_update(j: &mut Job, u: &JobUpdate) {
         j.stage = s;
     }
     if let Some(progress) = &u.progress {
-        // Игнорировать откат pct, если он уже > 0.
-        if !(progress.pct < j.progress.pct && j.progress.pct > 0.0) {
-            j.progress = progress.clone();
-        }
+        // Прогресс применяется целиком. Старый guard «не откатывать pct»
+        // блокировал весь update (включая speed/eta/label), когда pct шёл
+        // назад — а он шёл при каждом новом потоке yt-dlp (bv*+ba качает
+        // видео 0..100%, потом аудио с 0%) и при set_stage-сбросах.
+        // Итог: бар застывал на «Загрузка 100%», скорость не обновлялась.
+        // Теперь монотонность обеспечивает DownloadTracker (ytdlp.rs),
+        // а set_stage сознательно сбрасывает pct на новой стадии.
+        j.progress = progress.clone();
     }
     if let Some(v) = &u.finished_at {
         j.finished_at = Some(v.clone());
