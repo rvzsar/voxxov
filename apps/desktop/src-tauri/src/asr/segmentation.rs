@@ -80,7 +80,11 @@ pub struct VadSegmenter {
 
 impl VadSegmenter {
     pub fn new(sample_rate: u32) -> Option<Self> {
-        if sample_rate == 0 {
+        // GigaAM/SileroVad работают только на 16 кГц; C-код sherpa при
+        // другом sample_rate вызывает exit() процесса — защищаемся до
+        // создания детектора.
+        if sample_rate != 16000 {
+            tracing::warn!("ASR: unsupported sample rate {sample_rate} (need 16000)");
             return None;
         }
         let model_path = vad_model_path()?;

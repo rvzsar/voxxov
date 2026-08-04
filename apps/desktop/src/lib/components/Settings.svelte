@@ -28,9 +28,8 @@
     return Math.floor(v);
   }
 
-  // Cross-field + custom-range валидация. HTML5 min/max ловят простые
-  // диапазоны на input'е; здесь — то, что input'у недоступно (0 = "off"
-  // для maxHeight, cross-field для proxy.host, и т.п.).
+  // Валидация того, что HTML5 min/max не покрывают: 0 = "off" для
+  // maxHeight, cross-field для proxy.host и т.п.
   const errors = $derived.by(() => {
     const e: Record<string, string> = {};
     if (proxy.kind !== 'none' && !proxy.host?.trim()) {
@@ -42,8 +41,10 @@
     if (dl.maxHeight !== 0 && (dl.maxHeight < 144 || dl.maxHeight > 4320)) {
       e['dl.maxHeight'] = '0 (откл) или 144..4320';
     }
-    if (asr.sampleRate < 8000 || asr.sampleRate > 48000) {
-      e['asr.sampleRate'] = '8000..48000 Гц';
+    // GigaAM-V3 и SileroVad работают только на 16 кГц; другой sample rate
+    // либо крашит C-код sherpa, либо даёт мусор.
+    if (asr.sampleRate !== 16000) {
+      e['asr.sampleRate'] = 'GigaAM работает только на 16000 Гц';
     }
     if (out.formats.length === 0) {
       e['out.formats'] = 'Выберите хотя бы один';
@@ -84,7 +85,7 @@
   const pickModelDir = () => pickDir((p) => updateAsr({ modelDir: p }), 'Выберите папку с моделью GigaAM');
   const pickOutDir   = () => pickDir((p) => updateOut({ dir: p }),       'Выберите папку для результатов');
 
-  // Ctrl+S / Cmd+S → сохранить (стандартный паттерн desktop-приложений).
+  // Ctrl+S / Cmd+S → сохранить.
   function onKey(e: KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') {
       e.preventDefault();
@@ -197,11 +198,11 @@
       </label>
       <label>Частота (Гц)
         <input
-          type="number" min="8000" max="48000" step="1000"
+          type="number" min="16000" max="16000" step="1000"
           value={asr.sampleRate}
-          title="8000..48000 Гц (для GigaAM рекомендуется 16000)"
+          title="GigaAM-V3 и SileroVad работают только на 16000 Гц — поле зафиксировано"
           aria-invalid={!!errors['asr.sampleRate']}
-          oninput={(e) => updateAsr({ sampleRate: Math.max(8000, Math.min(48000, Number((e.currentTarget as HTMLInputElement).value) || 16000)) })}
+          oninput={() => updateAsr({ sampleRate: 16000 })}
         />
         {#if errors['asr.sampleRate']}<span class="err-msg">{errors['asr.sampleRate']}</span>{/if}
       </label>
@@ -291,7 +292,6 @@
   .chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
   .chip:focus-visible { outline: 1px solid var(--accent); }
   .lbl { font-size: 11px; color: var(--muted); margin-bottom: 2px; display: block; }
-  /* Inline-валидация: красная рамка + сообщение под полем. */
   input[aria-invalid="true"] { border-color: var(--err); }
   .err-msg {
     font-size: 10px; color: var(--err); margin-top: 1px;

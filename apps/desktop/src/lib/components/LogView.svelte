@@ -2,7 +2,7 @@
   import { jobsStore } from '../stores/jobs.svelte';
   import { api } from '../api';
   import { toast } from '../stores/toast.svelte';
-  import { stageLabel, fmtDuration } from '../format';
+  import { stageLabel, fmtDuration, overallPct } from '../format';
 
   const job = $derived(jobsStore.active());
   const logs = $derived(jobsStore.logsFor(jobsStore.activeId));
@@ -91,7 +91,6 @@
       {/if}
     </div>
 
-    <!-- Activity panel: prominent progress for active jobs -->
     {#if isActive}
       <div class="activity">
         <div class="activity-header">
@@ -99,10 +98,10 @@
           <span class="activity-label">{job.progress.label || stageLabel(job.stage)}</span>
         </div>
         <div class="activity-bar">
-          <div class="activity-fill" style="width: {((job.progress.pct || 0) * 100).toFixed(1)}%"></div>
+          <div class="activity-fill" style="width: {(overallPct(job) * 100).toFixed(1)}%"></div>
         </div>
         <div class="activity-stats">
-          <span class="activity-pct">{Math.round((job.progress.pct || 0) * 100)}%</span>
+          <span class="activity-pct">{Math.round(overallPct(job) * 100)}%</span>
           {#if job.progress.speed}
             <span class="activity-speed">{job.progress.speed}</span>
           {/if}
@@ -112,10 +111,9 @@
         </div>
       </div>
     {:else}
-      <!-- Compact progress for terminal jobs -->
       <div class="progress">
-        <div class="pct">{Math.round((job.progress.pct || 0) * 100)}%</div>
-        <div class="bar"><div class="fill" style="width: {((job.progress.pct || 0) * 100).toFixed(1)}%"></div></div>
+        <div class="pct">{Math.round(overallPct(job) * 100)}%</div>
+        <div class="bar"><div class="fill" style="width: {(overallPct(job) * 100).toFixed(1)}%"></div></div>
         <div class="lbl" title={job.progress.label}>{job.progress.label}</div>
       </div>
     {/if}
@@ -173,7 +171,6 @@
   .meta { font-size: 12px; color: var(--fg); }
   .dim { color: var(--muted); }
 
-  /* Activity panel - prominent progress for active jobs */
   .activity {
     background: var(--surface-1);
     border: 1px solid var(--accent);
@@ -216,9 +213,7 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* Compact progress for terminal jobs */
-  .progress { display: flex; align-items: center; gap: 8px; }
-  .pct { font-size: 12px; font-family: var(--mono); min-width: 32px; color: var(--muted); }
+  .progress { display: flex; align-items: center; gap: 8px; }  .pct { font-size: 12px; font-family: var(--mono); min-width: 32px; color: var(--muted); }
   .bar { flex: 1; height: 4px; background: var(--surface-3); border-radius: 2px; overflow: hidden; }
   .fill { height: 100%; background: var(--accent); transition: width 120ms; }
   .lbl { font-size: 11px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
