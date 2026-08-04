@@ -10,8 +10,8 @@
 
 <style>
   .bar {
-    height: 2px; background: var(--surface-3);
-    border-radius: 1px; overflow: hidden;
+    height: 4px; background: var(--surface-3);
+    border-radius: 2px; overflow: hidden;
   }
   .fill {
     height: 100%;

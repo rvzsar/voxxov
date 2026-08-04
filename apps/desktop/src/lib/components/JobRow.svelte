@@ -5,6 +5,7 @@
   import { toast } from '../stores/toast.svelte';
   import { stageLabel, fmtDuration, overallPct } from '../format';
   import ProgressBar from './ProgressBar.svelte';
+  import StageIcon from './StageIcon.svelte';
 
   type Props = { job: Job };
   let { job }: Props = $props();
@@ -69,16 +70,6 @@
     job.stage === 'cancelled' ? 'muted' : 'info',
   );
 
-  const stageIcon = $derived(
-    job.stage === 'fetching_metadata' ? '🔍' :
-    job.stage === 'downloading' ? '⬇️' :
-    job.stage === 'extracting_audio' ? '🎵' :
-    job.stage === 'transcribing' ? '🎙️' :
-    job.stage === 'done' ? '✅' :
-    job.stage === 'failed' ? '❌' :
-    job.stage === 'cancelled' ? '⏹️' : '⏳'
-  );
-
   const host = $derived.by(() => {
     if (job.source === 'local_file') return '';
     try { return new URL(job.url).hostname; } catch { return ''; }
@@ -136,7 +127,7 @@
       <img class="thumb" src={job.media.thumbnail} alt="" loading="lazy" referrerpolicy="no-referrer" />
     {/if}
     <span class="title">{job.media?.title ?? job.url}</span>
-    <span class="badge {stageClass}">{stageIcon} {stageLabel(job.stage)}</span>
+    <span class="badge {stageClass}"><StageIcon stage={job.stage} /> {stageLabel(job.stage)}</span>
   </div>
   <div class="progress-row">
     <ProgressBar pct={overallPct(job)} />
@@ -155,20 +146,38 @@
     <div class="preview" title={job.transcriptPreview}>{job.transcriptPreview.slice(0, 160)}…</div>
   {/if}
   <div class="meta">
-    <span class="dim">{job.source === 'local_file' ? '📁' : ''}{host}</span>
+    <span class="dim">
+      {#if job.source === 'local_file'}
+        <svg class="meta-icon" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5c0-.6.4-1 1-1h3.5l1.5 2H13c.6 0 1 .4 1 1v6c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1V5z"/></svg>
+      {/if}
+      {host}
+    </span>
     {#if job.media?.durationSec}<span class="dim">{fmtDuration(job.media.durationSec)}</span>{/if}
     {#if queuePos > 0}<span class="dim">в очереди: {queuePos}</span>{/if}
     {#if createdDate}<span class="dim date">{createdDate}</span>{/if}
     {#if job.error}<span class="err" title={job.error}>{job.error.slice(0, 60)}</span>{/if}
     {#if isTerminal}
       <button class="action-btn" type="button" onclick={openJobFolder} disabled={revealing} title="Открыть папку с файлами задачи">
-        {revealing ? '…' : '📁 папка'}
+        {#if revealing}
+          …
+        {:else}
+          <svg class="btn-icon" width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5c0-.6.4-1 1-1h3.5l1.5 2H13c.6 0 1 .4 1 1v6c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1V5z"/></svg>
+          папка
+        {/if}
       </button>
       {#if job.stage === 'failed' || job.stage === 'cancelled'}
-        <button class="action-btn retry" type="button" onclick={retryJob} title="Повторить ту же задачу">↻ повторить</button>
+        <button class="action-btn retry" type="button" onclick={retryJob} title="Повторить ту же задачу">
+          <svg class="btn-icon" width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.61-3.89"/><path d="M13.5 1.5V5h-3.5"/></svg>
+          повторить
+        </button>
       {/if}
       <button class="action-btn save" type="button" onclick={saveJob} disabled={saving} title="Сохранить копию папки в выбранное место">
-        {saving ? '…' : '💾 сохранить'}
+        {#if saving}
+          …
+        {:else}
+          <svg class="btn-icon" width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 2.5h10v11H3z"/><path d="M5.5 2.5V6h5V2.5"/><path d="M5 9.5h6V13H5z"/></svg>
+          сохранить
+        {/if}
       </button>
     {/if}
     {#if !isTerminal}
@@ -179,13 +188,13 @@
 
 <style>
   .row {
-    display: flex; flex-direction: column; gap: 3px;
+    display: flex; flex-direction: column; gap: 4px;
     width: 100%; text-align: left;
     background: transparent;
     border: 0; border-left: 2px solid transparent;
-    padding: 6px 8px;
+    padding: 8px 10px;
     color: inherit; cursor: pointer;
-    border-radius: 3px;
+    border-radius: 4px;
     transition: background 80ms;
   }
   .row:hover { background: var(--surface-2); }
@@ -252,10 +261,13 @@
   .cancel-btn:focus-visible { outline: 1px solid var(--err); }
   .action-btn {
     background: transparent; border: 1px solid var(--border); color: var(--muted);
-    cursor: pointer; padding: 1px 6px; font-size: 11px; line-height: 1.4;
+    cursor: pointer; padding: 2px 7px; font-size: 11px; line-height: 1.4;
     border-radius: 3px; font-family: inherit;
+    display: inline-flex; align-items: center; gap: 3px;
     transition: background 80ms, color 80ms;
   }
+  .btn-icon { flex-shrink: 0; }
+  .meta-icon { vertical-align: -1px; margin-right: 2px; }
   .action-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--fg); }
   .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .action-btn.save:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }

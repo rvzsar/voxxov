@@ -67,3 +67,12 @@ export function fmtDuration(sec: number): string {
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   return `${m}:${String(s).padStart(2, '0')}`;
 }
+
+/** Русская плюрализация: 1 задача, 2 задачи, 5 задач. */
+export function fmtJobs(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${n} задача`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} задачи`;
+  return `${n} задач`;
+}

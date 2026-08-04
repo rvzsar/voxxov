@@ -3,6 +3,7 @@
   import { api } from '../api';
   import { toast } from '../stores/toast.svelte';
   import { stageLabel, fmtDuration, overallPct } from '../format';
+  import StageIcon from './StageIcon.svelte';
 
   const job = $derived(jobsStore.active());
   const logs = $derived(jobsStore.logsFor(jobsStore.activeId));
@@ -52,16 +53,6 @@
   const isActive = $derived(
     job && !['done', 'failed', 'cancelled'].includes(job.stage)
   );
-
-  const stageIcon = $derived(
-    job?.stage === 'fetching_metadata' ? '🔍' :
-    job?.stage === 'downloading' ? '⬇️' :
-    job?.stage === 'extracting_audio' ? '🎵' :
-    job?.stage === 'transcribing' ? '🎙️' :
-    job?.stage === 'done' ? '✅' :
-    job?.stage === 'failed' ? '❌' :
-    job?.stage === 'cancelled' ? '⏹️' : '⏳'
-  );
 </script>
 
 {#if !job}
@@ -75,7 +66,7 @@
         <div class="title">{job.media?.title ?? job.url}</div>
         <div class="url">{job.url}</div>
       </div>
-      <span class="badge">{stageIcon} {stageLabel(job.stage)}</span>
+      <span class="badge"><StageIcon stage={job.stage} /> {stageLabel(job.stage)}</span>
     </div>
 
     <div class="meta">
@@ -94,7 +85,7 @@
     {#if isActive}
       <div class="activity">
         <div class="activity-header">
-          <span class="activity-icon">{stageIcon}</span>
+          <span class="activity-icon"><StageIcon stage={job.stage} size={18} /></span>
           <span class="activity-label">{job.progress.label || stageLabel(job.stage)}</span>
         </div>
         <div class="activity-bar">
@@ -181,7 +172,7 @@
   .activity-header {
     display: flex; align-items: center; gap: 8px;
   }
-  .activity-icon { font-size: 18px; }
+  .activity-icon { display: flex; align-items: center; color: var(--accent); }
   .activity-label {
     font-size: 13px; font-weight: 500; color: var(--fg);
     flex: 1; min-width: 0;

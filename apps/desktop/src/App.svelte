@@ -3,6 +3,7 @@
   import { jobsStore } from './lib/stores/jobs.svelte';
   import { settingsStore } from './lib/stores/settings.svelte';
   import { api } from './lib/api';
+  import { fmtJobs } from './lib/format';
   import UrlInput from './lib/components/UrlInput.svelte';
   import JobList from './lib/components/JobList.svelte';
   import LogView from './lib/components/LogView.svelte';
@@ -23,7 +24,9 @@
 <div class="app">
   <nav class="activity-bar" aria-label="Основная навигация">
     <div class="ab-section ab-top">
-      <span class="logo" aria-label="GigaAM">🎙</span>
+      <span class="logo" aria-label="GigaAM">
+        <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2.5" width="4" height="6" rx="2"/><path d="M3.5 8a4.5 4.5 0 0 0 9 0"/><path d="M8 12.5V14"/></svg>
+      </span>
     </div>
     <div class="ab-section ab-nav">
       <button class="ab-btn" class:active={tab === 'tasks'} aria-label="Задачи" aria-current={tab === 'tasks' ? 'page' : undefined} onclick={() => (tab = 'tasks')} title="Задачи">
@@ -73,7 +76,7 @@
       {#if backendOk === true}ready{:else if backendOk === false}offline — yt-dlp/ffmpeg не найдены{:else}…{/if}
     </button>
     <span class="sb-sep"></span>
-    <span class="sb-item">{jobsStore.jobs.length} jobs</span>
+    <span class="sb-item">{fmtJobs(jobsStore.jobs.length)}</span>
     <span class="sb-right"></span>
     <span class="sb-item dim">v0.1</span>
   </footer>
@@ -105,7 +108,7 @@
   .ab-top { padding: 4px 0 8px; }
   .ab-nav { flex: 1; }
   .ab-bottom { margin-top: auto; }
-  .logo { font-size: 18px; line-height: 1; }
+  .logo { display: flex; align-items: center; }
   .ab-btn {
     width: 32px; height: 32px;
     display: flex; align-items: center; justify-content: center;
