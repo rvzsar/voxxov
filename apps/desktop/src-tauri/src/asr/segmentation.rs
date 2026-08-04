@@ -8,6 +8,13 @@
 //! Модель обучена на аудио ~15-25 сек. Слишком короткие сегменты (< 5 сек)
 //! дают мусор — у модели нет контекста.
 //!
+//! ## Стриминг
+//!
+//! Пайплайн — один проход: `VadSegmenter::feed()` кормит VAD кусками ~64 мс
+//! и отдаёт завершённые сегменты; `ChunkAssembler` склеивает их в чанки
+//! 15-22 сек и закрывает готовые. В памяти держится только текущий чанк
+//! (≤ ~52 сек сэмплов), а не весь файл.
+//!
 //! ## Почему VAD кормится кусками ~64 мс (а не 10 сек)
 //!
 //! `VoiceActivityDetector::AcceptWaveform` в sherpa-onnx сворачивает
@@ -44,7 +51,8 @@ const MIN_SEGMENT_SAMPLES: usize = 160; // 0.01 сек @ 16kHz
 /// Модель обучена на аудио ~15-25 сек; оптимальный диапазон чанков.
 const MERGE_MAX_SEC: f32 = 22.0; // максимальная длина чанка
 const MERGE_MIN_SEC: f32 = 15.0; // минимальная длина для закрытия чанка
-const MERGE_STRICT_LIMIT_SEC: f32 = 30.0; // жёсткий лимит — длиннее режем
+/// Жёсткий лимит чанка — длиннее режем (использует и engine для split_chunk).
+pub const MERGE_STRICT_LIMIT_SEC: f32 = 30.0;
 const MERGE_THRESHOLD_SEC: f32 = 0.2; // минимальный осмысленный сегмент
 
 /// Параметры SileroVad (как в gigastt).
@@ -61,149 +69,161 @@ const VAD_BUFFER_SEC: f32 = 120.0;
 /// ~64 мс при 16 кГц (2 окна по 512) — см. док модуля: только при
 /// маленьких кусках паузы и авто-сплит становятся видимыми для
 /// сегментации (AcceptWaveform сворачивает is_speech в OR по куску).
-const VAD_FEED_SAMPLES: usize = 1024;
+pub const VAD_FEED_SAMPLES: usize = 1024;
 
-/// Возвращает список пар `(start_sample, end_sample)` для склеенных
-/// речевых чанков. VAD-сегменты склеиваются в чанки по 15-22 сек.
-pub fn find_speech_segments(samples: &[f32], sample_rate: u32) -> Vec<(usize, usize)> {
-    if samples.is_empty() || sample_rate == 0 {
-        return Vec::new();
-    }
-
-    let model_path = match vad_model_path() {
-        Some(p) => p,
-        None => {
-            tracing::warn!(
-                "SileroVad model (silero_vad.onnx) not found in models dir; \
-                 no segmentation possible — empty transcript"
-            );
-            return Vec::new();
-        }
-    };
-
-    let silero_config = SileroVadModelConfig {
-        model: Some(model_path.to_string_lossy().to_string()),
-        threshold: VAD_THRESHOLD,
-        min_silence_duration: VAD_MIN_SILENCE_SEC,
-        min_speech_duration: VAD_MIN_SPEECH_SEC,
-        window_size: VAD_WINDOW_SIZE,
-        max_speech_duration: VAD_MAX_SPEECH_SEC,
-    };
-
-    let vad_config = VadModelConfig {
-        silero_vad: silero_config,
-        ten_vad: TenVadModelConfig::default(),
-        sample_rate: sample_rate as i32,
-        num_threads: 1,
-        provider: Some("cpu".to_string()),
-        debug: false,
-    };
-
-    let vad = match VoiceActivityDetector::create(&vad_config, VAD_BUFFER_SEC) {
-        Some(v) => v,
-        None => {
-            tracing::warn!("failed to create SileroVad instance");
-            return Vec::new();
-        }
-    };
-
-    // Streaming-паттерн (см. док модуля): кормим VAD кусками ~64 мс,
-    // забираем завершённые сегменты, `flush()` — один раз в конце файла.
-    // Границы сегментов падают на реальные паузы и провалы уверенности,
-    // а не на жёсткий таймер — слова не разрезаются.
-    let mut segments: Vec<(usize, usize)> = Vec::new();
-
-    for chunk_start in (0..samples.len()).step_by(VAD_FEED_SAMPLES) {
-        let chunk_end = (chunk_start + VAD_FEED_SAMPLES).min(samples.len());
-        vad.accept_waveform(&samples[chunk_start..chunk_end]);
-        drain_segments(&vad, chunk_end, &mut segments);
-    }
-
-    // Неоконченная речь в конце файла: flush форсирует её эмиссию.
-    vad.flush();
-    drain_segments(&vad, samples.len(), &mut segments);
-
-    // Склеиваем VAD-сегменты в чанки по 15-22 сек (как в GigaAM transcribe_longform)
-    merge_segments(samples, &segments, sample_rate)
+/// Стриминговый VAD: кормим куски ~64 мс, получаем завершённые сегменты
+/// (глобальные sample-индексы). `None` — модель SileroVad недоступна;
+/// движок в этом случае вернёт пустой транскрипт.
+pub struct VadSegmenter {
+    vad: VoiceActivityDetector,
 }
 
-/// Склеить VAD-сегменты в чанки по 15-22 секунды (как в GigaAM `segment_audio_file`).
-///
-/// Модель обучена на аудио ~15-25 сек. Слишком короткие сегменты дают мусор.
-/// Сегменты длиннее 30 сек разрезаются в самом тихом месте (не по центру).
-fn merge_segments(samples: &[f32], raw: &[(usize, usize)], sample_rate: u32) -> Vec<(usize, usize)> {
-    if raw.is_empty() {
-        return Vec::new();
-    }
-    let sr = sample_rate as f32;
-    let max_samples = (MERGE_MAX_SEC * sr) as usize;
-    let min_samples = (MERGE_MIN_SEC * sr) as usize;
-    let strict_limit_samples = (MERGE_STRICT_LIMIT_SEC * sr) as usize;
-    let threshold_samples = (MERGE_THRESHOLD_SEC * sr) as usize;
-
-    let mut merged: Vec<(usize, usize)> = Vec::new();
-    let mut curr_start: usize = 0;
-    let mut curr_end: usize = 0;
-    let mut curr_duration: usize = 0;
-
-    for &(seg_start, seg_end) in raw {
-        if curr_duration == 0 {
-            curr_start = seg_start;
-            curr_end = seg_end;
-            curr_duration = seg_end - seg_start;
-            continue;
+impl VadSegmenter {
+    pub fn new(sample_rate: u32) -> Option<Self> {
+        if sample_rate == 0 {
+            return None;
         }
+        let model_path = vad_model_path()?;
+        let silero_config = SileroVadModelConfig {
+            model: Some(model_path.to_string_lossy().to_string()),
+            threshold: VAD_THRESHOLD,
+            min_silence_duration: VAD_MIN_SILENCE_SEC,
+            min_speech_duration: VAD_MIN_SPEECH_SEC,
+            window_size: VAD_WINDOW_SIZE,
+            max_speech_duration: VAD_MAX_SPEECH_SEC,
+        };
+        let vad_config = VadModelConfig {
+            silero_vad: silero_config,
+            ten_vad: TenVadModelConfig::default(),
+            sample_rate: sample_rate as i32,
+            num_threads: 1,
+            provider: Some("cpu".to_string()),
+            debug: false,
+        };
+        let vad = match VoiceActivityDetector::create(&vad_config, VAD_BUFFER_SEC) {
+            Some(v) => v,
+            None => {
+                tracing::warn!("failed to create SileroVad instance");
+                return None;
+            }
+        };
+        Some(Self { vad })
+    }
 
+    /// Скормить кусок сэмплов; вернуть завершённые сегменты.
+    pub fn feed(&mut self, piece: &[f32], stream_end: usize) -> Vec<(usize, usize)> {
+        self.vad.accept_waveform(piece);
+        let mut out = Vec::new();
+        drain_segments(&self.vad, stream_end, &mut out);
+        out
+    }
+
+    /// Flush на конце файла; вернуть последние сегменты.
+    pub fn finish(&mut self, stream_end: usize) -> Vec<(usize, usize)> {
+        self.vad.flush();
+        let mut out = Vec::new();
+        drain_segments(&self.vad, stream_end, &mut out);
+        out
+    }
+}
+
+/// Инкрементальная склейка VAD-сегментов в чанки 15-22 сек.
+/// Тот же алгоритм, что `segment_audio_file` в GigaAM, но по одному
+/// сегменту за раз: `feed` возвращает закрытый чанк (не больше одного),
+/// `finish` — финальный частичный чанк.
+pub struct ChunkAssembler {
+    max_samples: usize,
+    min_samples: usize,
+    threshold_samples: usize,
+    curr_start: usize,
+    curr_end: usize,
+    curr_duration: usize,
+}
+
+impl ChunkAssembler {
+    pub fn new(sample_rate: u32) -> Self {
+        let sr = sample_rate as f32;
+        Self {
+            max_samples: (MERGE_MAX_SEC * sr) as usize,
+            min_samples: (MERGE_MIN_SEC * sr) as usize,
+            threshold_samples: (MERGE_THRESHOLD_SEC * sr) as usize,
+            curr_start: 0,
+            curr_end: 0,
+            curr_duration: 0,
+        }
+    }
+
+    /// Текущее начало чанка — относительно него движок держит буфер сэмплов.
+    pub fn curr_start(&self) -> usize {
+        self.curr_start
+    }
+
+    /// Закрытые чанки (абсолютные `(start, end)`); максимум один за вызов.
+    pub fn feed(&mut self, seg: (usize, usize)) -> Vec<(usize, usize)> {
+        let (seg_start, seg_end) = seg;
+        if self.curr_duration == 0 {
+            self.curr_start = seg_start;
+            self.curr_end = seg_end;
+            self.curr_duration = seg_end - seg_start;
+            return Vec::new();
+        }
         let seg_len = seg_end - seg_start;
         // Закрыть текущий чанк если:
         // - добавление сегмента превысит max_duration
         // - текущий чанк уже > min_duration
-        if curr_duration > threshold_samples
-            && (curr_duration + seg_len > max_samples || curr_duration > min_samples)
+        if self.curr_duration > self.threshold_samples
+            && (self.curr_duration + seg_len > self.max_samples
+                || self.curr_duration > self.min_samples)
         {
-            push_chunk(&mut merged, curr_start, curr_end, strict_limit_samples, samples);
-            curr_start = seg_start;
-            curr_end = seg_end;
-            curr_duration = seg_len;
+            let closed = vec![(self.curr_start, self.curr_end)];
+            self.curr_start = seg_start;
+            self.curr_end = seg_end;
+            self.curr_duration = seg_len;
+            closed
         } else {
-            curr_end = seg_end;
-            curr_duration = curr_end - curr_start;
+            self.curr_end = seg_end;
+            self.curr_duration = self.curr_end - self.curr_start;
+            Vec::new()
         }
     }
 
-    if curr_duration > threshold_samples {
-        push_chunk(&mut merged, curr_start, curr_end, strict_limit_samples, samples);
+    /// Финальный частичный чанк на конце файла.
+    pub fn finish(&mut self) -> Vec<(usize, usize)> {
+        if self.curr_duration > self.threshold_samples {
+            let closed = vec![(self.curr_start, self.curr_end)];
+            self.curr_start = 0;
+            self.curr_end = 0;
+            self.curr_duration = 0;
+            closed
+        } else {
+            Vec::new()
+        }
     }
-
-    tracing::info!(
-        "ASR merge: {} VAD segments -> {} chunks (max={:.0}s, min={:.0}s)",
-        raw.len(),
-        merged.len(),
-        MERGE_MAX_SEC,
-        MERGE_MIN_SEC
-    );
-
-    merged
 }
 
-/// Запушить чанк, разрезав на части если превышает strict_limit.
-/// Разрез делается в самом тихом месте средней части чанка, а не по
-/// центру — иначе границы падают в середину слова.
-fn push_chunk(
-    out: &mut Vec<(usize, usize)>,
-    start: usize,
-    end: usize,
-    strict_limit: usize,
-    samples: &[f32],
-) {
-    let len = end - start;
-    if len <= strict_limit {
-        out.push((start, end));
-        return;
+/// Разрезать чанк на части ≤ `strict_limit` (относительные индексы).
+/// Разрез — в самом тихом месте средней части, а не по центру — иначе
+/// границы падают в середину слова.
+pub fn split_chunk(chunk: &[f32], strict_limit: usize) -> Vec<(usize, usize)> {
+    fn split_rec(
+        out: &mut Vec<(usize, usize)>,
+        chunk: &[f32],
+        start: usize,
+        end: usize,
+        strict: usize,
+    ) {
+        let len = end - start;
+        if len <= strict {
+            out.push((start, end));
+            return;
+        }
+        let cut = quietest_split_point(chunk, start, end);
+        split_rec(out, chunk, start, cut, strict);
+        split_rec(out, chunk, cut, end, strict);
     }
-    let cut = quietest_split_point(samples, start, end);
-    push_chunk(out, start, cut, strict_limit, samples);
-    push_chunk(out, cut, end, strict_limit, samples);
+    let mut out = Vec::new();
+    split_rec(&mut out, chunk, 0, chunk.len(), strict_limit);
+    out
 }
 
 /// Самое тихое место в средней половине `[start, end)`: минимизируем RMS
@@ -236,16 +256,7 @@ fn quietest_split_point(samples: &[f32], start: usize, end: usize) -> usize {
 ///
 /// `seg.start()` — глобальный sample offset (детектор не сбрасывался),
 /// `seg.n()` — длина в сэмплах. Конец клампится к `stream_end`.
-///
-/// Параметры:
-/// - `vad` — VoiceActivityDetector (с непустой очередью segments_).
-/// - `stream_end` — глобальный sample offset конца уже скормленного аудио.
-/// - `out` — куда пушим (start, end) пары.
-fn drain_segments(
-    vad: &VoiceActivityDetector,
-    stream_end: usize,
-    out: &mut Vec<(usize, usize)>,
-) {
+fn drain_segments(vad: &VoiceActivityDetector, stream_end: usize, out: &mut Vec<(usize, usize)>) {
     while !vad.is_empty() {
         if let Some(seg) = vad.front() {
             let seg_start = seg.start().max(0) as usize;
@@ -277,81 +288,68 @@ fn vad_model_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    // --- ChunkAssembler: те же сценарии, что у merge_segments в GigaAM ---
+
     #[test]
-    fn empty_input_returns_empty() {
-        assert!(find_speech_segments(&[], 16000).is_empty());
+    fn assembler_empty() {
+        let mut a = ChunkAssembler::new(16000);
+        assert!(a.finish().is_empty());
     }
 
     #[test]
-    fn zero_sample_rate_returns_empty() {
-        let samples = vec![0.0f32; 1000];
-        assert!(find_speech_segments(&samples, 0).is_empty());
+    fn assembler_single_short_segment_passthrough() {
+        // 10s > threshold 0.2s — проходит целиком.
+        let mut a = ChunkAssembler::new(16000);
+        assert!(a.feed((0, 160000)).is_empty());
+        assert_eq!(a.finish(), vec![(0, 160000)]);
     }
 
     #[test]
-    fn missing_vad_model_returns_empty_without_panic() {
-        let samples = vec![0.0f32; 16000];
-        let segs = find_speech_segments(&samples, 16000);
-        let _ = segs;
-    }
-
-    // --- merge_segments tests ---
-
-    #[test]
-    fn merge_empty() {
-        assert!(merge_segments(&[], &[], 16000).is_empty());
+    fn assembler_below_threshold_dropped() {
+        // 0.1s < threshold 0.2s — отбрасывается.
+        let mut a = ChunkAssembler::new(16000);
+        assert!(a.feed((0, 1600)).is_empty());
+        assert!(a.finish().is_empty());
     }
 
     #[test]
-    fn merge_single_short_segment_passthrough() {
-        // 10s > threshold 0.2s — passes through
-        let raw = vec![(0, 160000)];
-        let merged = merge_segments(&[0.0; 160000], &raw, 16000);
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0], (0, 160000));
-    }
-
-    #[test]
-    fn merge_below_threshold_dropped() {
-        // 0.1s < threshold 0.2s — dropped
-        let raw = vec![(0, 1600)];
-        let merged = merge_segments(&[], &raw, 16000);
-        assert!(merged.is_empty());
-    }
-
-    #[test]
-    fn merge_multiple_short_concatenated() {
+    fn assembler_multiple_short_concatenated() {
         let sr: usize = 16000;
-        let raw = vec![(0, 5 * sr), (6 * sr, 10 * sr), (11 * sr, 16 * sr)];
-        let merged = merge_segments(&[0.0; 16 * sr], &raw, sr as u32);
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0], (0, 16 * sr));
+        let mut a = ChunkAssembler::new(sr as u32);
+        assert!(a.feed((0, 5 * sr)).is_empty());
+        assert!(a.feed((6 * sr, 10 * sr)).is_empty());
+        assert!(a.feed((11 * sr, 16 * sr)).is_empty());
+        assert_eq!(a.finish(), vec![(0, 16 * sr)]);
     }
 
     #[test]
-    fn merge_splits_at_max_duration() {
+    fn assembler_splits_at_max_duration() {
         let sr: usize = 16000;
-        let raw = vec![(0, 12 * sr), (12 * sr, 24 * sr)];
-        let merged = merge_segments(&[0.0; 24 * sr], &raw, sr as u32);
-        assert_eq!(merged.len(), 2);
+        let mut a = ChunkAssembler::new(sr as u32);
+        assert!(a.feed((0, 12 * sr)).is_empty());
+        assert_eq!(a.feed((12 * sr, 24 * sr)), vec![(0, 12 * sr)]);
+        assert_eq!(a.finish(), vec![(12 * sr, 24 * sr)]);
     }
 
     #[test]
-    fn merge_splits_at_min_duration() {
+    fn assembler_splits_at_min_duration() {
         let sr: usize = 16000;
-        let raw = vec![(0, 16 * sr), (16 * sr, 18 * sr)];
-        let merged = merge_segments(&[0.0; 18 * sr], &raw, sr as u32);
-        assert_eq!(merged.len(), 2);
+        let mut a = ChunkAssembler::new(sr as u32);
+        assert!(a.feed((0, 16 * sr)).is_empty());
+        assert_eq!(a.feed((16 * sr, 18 * sr)), vec![(0, 16 * sr)]);
+        assert_eq!(a.finish(), vec![(16 * sr, 18 * sr)]);
     }
 
+    // --- split_chunk / quietest_split_point ---
+
     #[test]
-    fn merge_strict_limit_splits_long() {
+    fn split_chunk_limits_long_chunk() {
         let sr: usize = 16000;
-        let raw = vec![(0, 45 * sr)];
-        let merged = merge_segments(&[0.0; 45 * sr], &raw, sr as u32);
-        assert!(merged.len() >= 2);
-        for &(s, e) in &merged {
-            assert!((e - s) / sr <= 30);
+        let chunk = vec![0.0f32; 45 * sr];
+        let pieces = split_chunk(&chunk, 30 * sr);
+        assert!(pieces.len() >= 2);
+        for &(s, e) in &pieces {
+            assert!(e - s <= 30 * sr);
         }
     }
 

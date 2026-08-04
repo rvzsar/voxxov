@@ -12,6 +12,7 @@
 
 use super::fmt_mmss;
 use super::grouping::group_into_segments;
+use super::segmentation::{split_chunk, ChunkAssembler, VadSegmenter, MERGE_STRICT_LIMIT_SEC, VAD_FEED_SAMPLES};
 use super::Transcription;
 use crate::config::AsrConfig;
 use crate::error::{AppError, AppResult};
@@ -19,6 +20,7 @@ use crate::state::AppState;
 use crate::types::{JobUpdate, Progress};
 use parking_lot::Mutex;
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -97,19 +99,19 @@ pub async fn transcribe(
     let job_id_owned = job_id.to_string();
     let result =
         tokio::task::spawn_blocking(move || -> AppResult<sherpa_onnx::OfflineRecognizerResult> {
-            let wave = sherpa_onnx::Wave::read(&audio_path.to_string_lossy()).ok_or_else(|| {
-                AppError::Asr(format!("read wav {}: failed", audio_path.display()))
-            })?;
-            let samples = wave.samples();
-            if samples.is_empty() {
+            // Стриминг: WAV читается кусками, VAD и декод идут одним проходом,
+            // в памяти — только текущий чанк, а не весь файл.
+            let mut wav = WavReader::open(&audio_path)?;
+            let sample_rate = wav.sample_rate();
+            let total = wav.total_samples();
+            if total == 0 {
                 return Err(AppError::Asr("no audio samples".into()));
             }
-            let sample_rate = wave.sample_rate();
             tracing::info!(
                 "ASR: {} samples @ {}Hz ({:.1}s) from {}",
-                samples.len(),
+                total,
                 sample_rate,
-                samples.len() as f32 / sample_rate as f32,
+                total as f32 / sample_rate as f32,
                 audio_path.display()
             );
 
@@ -156,103 +158,60 @@ pub async fn transcribe(
             }
             let recognizer = cache_guard.1.as_ref().unwrap();
 
-            // Чанки определяются VAD + merge_segments в segmentation.rs
-            // (15-22 сек, как в GigaAM transcribe_longform).
-            let total = samples.len();
-            let mut all_text = String::new();
-            let mut all_tokens: Vec<String> = Vec::new();
-            let mut all_timestamps: Vec<f32> = Vec::new();
-            let mut all_durations: Vec<f32> = Vec::new();
+            // Нет VAD-модели — пустой транскрипт (как раньше).
+            let Some(mut segmenter) = VadSegmenter::new(sample_rate as u32) else {
+                return Ok(sherpa_onnx::OfflineRecognizerResult {
+                    text: String::new(),
+                    tokens: Vec::new(),
+                    timestamps: None,
+                    durations: None,
+                });
+            };
+            let mut assembler = ChunkAssembler::new(sample_rate as u32);
+            let strict_limit = (MERGE_STRICT_LIMIT_SEC * sample_rate as f32) as usize;
+            // Буфер текущего чанка: от assembler.curr_start() до stream_pos.
+            let mut chunk_buf: Vec<f32> = Vec::new();
+            let mut acc = DecodeAccum::default();
+            let mut seg_count: usize = 0;
+            let mut stream_pos: usize = 0;
 
-            // `sample_rate` is i32 в sherpa_onnx::Wave; VAD принимает u32.
-            let chunks: Vec<(usize, usize)> =
-                super::segmentation::find_speech_segments(&samples, sample_rate as u32);
-
-            tracing::info!(
-                "ASR VAD: {} segments from {} samples ({:.1}s)",
-                chunks.len(),
-                total,
-                total as f32 / sample_rate as f32
-            );
-            for (i, &(s, e)) in chunks.iter().enumerate().take(20) {
-                tracing::debug!(
-                    "ASR VAD seg[{}]: {}..{} ({:.2}s)",
-                    i,
-                    s,
-                    e,
-                    (e - s) as f32 / sample_rate as f32
-                );
-            }
-
-            // Throttled UI progress: раз в 2 сек + на последнем чанке.
-            // RTF и ETA обновляются на основе реально обработанных сэмплов.
+            // Throttled UI progress: раз в 2 сек. RTF и ETA — по реально
+            // декодированным сэмплам (VAD бежит впереди декода).
             const PROGRESS_INTERVAL_SECS: u64 = 2;
             let decode_start = Instant::now();
             let mut last_emit = Instant::now();
-            let total_chunks = chunks.len();
-            let mut chunk_idx: usize = 0;
-            let mut samples_done: usize = 0;
 
-            for (chunk_start, chunk_end) in chunks {
+            // Один проход: WAV → VAD (куски 64 мс) → склейка → декод.
+            while let Some(piece) = wav.next(VAD_FEED_SAMPLES)? {
                 if cancel.is_cancelled() {
                     return Err(AppError::Cancelled);
                 }
-                let chunk = &samples[chunk_start..chunk_end];
+                stream_pos += piece.len();
+                chunk_buf.extend_from_slice(&piece);
 
-                let stream = recognizer.create_stream();
-                stream.accept_waveform(sample_rate, chunk);
-                recognizer.decode(&stream);
-
-                let r = stream
-                    .get_result()
-                    .ok_or_else(|| AppError::Asr("decode returned no result".into()))?;
-
-                let chunk_offset_sec = chunk_start as f32 / sample_rate as f32;
-                let chunk_text = r.text.trim();
-
-                let text_preview: String = chunk_text.chars().take(80).collect();
-                tracing::debug!(
-                    "ASR chunk[{}/{}]: samples {}..{} ({:.2}s) tokens={} text={:?}",
-                    chunk_idx,
-                    total_chunks,
-                    chunk_start,
-                    chunk_end,
-                    (chunk_end - chunk_start) as f32 / sample_rate as f32,
-                    r.tokens.len(),
-                    text_preview
-                );
-                if !chunk_text.is_empty() {
-                    if !all_text.is_empty() {
-                        all_text.push(' ');
+                for seg in segmenter.feed(&piece, stream_pos) {
+                    seg_count += 1;
+                    let before = assembler.curr_start();
+                    for (s, e) in assembler.feed(seg) {
+                        let chunk = &chunk_buf[..e - before];
+                        decode_chunk(recognizer, sample_rate, &mut acc, chunk, s, strict_limit, &cancel,
+                        )?;
                     }
-                    all_text.push_str(chunk_text);
-                }
-                all_tokens.extend(r.tokens);
-                if let Some(ts) = r.timestamps {
-                    all_timestamps.extend(ts.iter().map(|&t| t + chunk_offset_sec));
-                }
-                if let Some(durs) = r.durations {
-                    all_durations.extend(durs);
+                    chunk_buf.drain(..(assembler.curr_start() - before));
                 }
 
-                samples_done = chunk_end;
-                chunk_idx += 1;
-
-                // UI progress: throttled — раз в 2 сек или последний чанк.
                 let now = Instant::now();
-                if chunk_idx == total_chunks
-                    || now.duration_since(last_emit) >= Duration::from_secs(PROGRESS_INTERVAL_SECS)
-                {
+                if now.duration_since(last_emit) >= Duration::from_secs(PROGRESS_INTERVAL_SECS) {
                     let elapsed = decode_start.elapsed().as_secs_f32();
-                    let audio_done_sec = samples_done as f32 / sample_rate as f32;
-                    let rtf = if audio_done_sec > 0.0 {
-                        elapsed / audio_done_sec
+                    let done_sec = acc.decoded_until as f32 / sample_rate as f32;
+                    let rtf = if done_sec > 0.0 {
+                        elapsed / done_sec
                     } else {
                         0.0
                     };
-                    let audio_total_sec = total as f32 / sample_rate as f32;
-                    let eta_sec = if rtf > 0.0 && audio_done_sec < audio_total_sec {
-                        (audio_total_sec - audio_done_sec) * rtf
+                    let pct = (acc.decoded_until as f32 / total as f32).clamp(0.0, 1.0);
+                    let eta_sec = if rtf > 0.0 && acc.decoded_until < total as usize {
+                        (total as f32 - acc.decoded_until as f32) / sample_rate as f32 * rtf
                     } else {
                         0.0
                     };
@@ -260,8 +219,8 @@ pub async fn transcribe(
                         &job_id_owned,
                         JobUpdate {
                             progress: Some(Progress {
-                                pct: chunk_idx as f32 / total_chunks as f32,
-                                label: format!("Распознаём {}/{}", chunk_idx, total_chunks),
+                                pct,
+                                label: format!("Распознаём {:.0}%", pct * 100.0),
                                 speed: Some(format!("RTF {:.2}x", rtf)),
                                 eta: Some(fmt_mmss(eta_sec)),
                             }),
@@ -272,11 +231,35 @@ pub async fn transcribe(
                 }
             }
 
+            // Конец файла: последние сегменты VAD + финальный чанк.
+            for seg in segmenter.finish(stream_pos) {
+                seg_count += 1;
+                let before = assembler.curr_start();
+                for (s, e) in assembler.feed(seg) {
+                    let chunk = &chunk_buf[..e - before];
+                    decode_chunk(recognizer, sample_rate, &mut acc, chunk, s, strict_limit, &cancel,
+                    )?;
+                }
+                chunk_buf.drain(..(assembler.curr_start() - before));
+            }
+            let before = assembler.curr_start();
+            for (s, e) in assembler.finish() {
+                let chunk = &chunk_buf[..e - before];
+                decode_chunk(recognizer, sample_rate, &mut acc, chunk, s, strict_limit, &cancel,
+                )?;
+            }
+
+            tracing::info!(
+                "ASR VAD: {} segments from {} samples ({:.1}s)",
+                seg_count,
+                total,
+                total as f32 / sample_rate as f32
+            );
             tracing::info!(
                 "ASR: {} chunks (avg {:.1}s, ≤{} samples) from {} samples",
-                total_chunks,
-                if total_chunks > 0 {
-                    (total as f32 / total_chunks as f32) / sample_rate as f32
+                acc.chunks,
+                if acc.chunks > 0 {
+                    (total as f32 / acc.chunks as f32) / sample_rate as f32
                 } else {
                     0.0
                 },
@@ -285,20 +268,20 @@ pub async fn transcribe(
                 total
             );
 
-            // Конструктор OfflineRecognizerResult публичный — собираем комбинированный
-            // результат и возвращаем Ok(...) чтобы удовлетворить сигнатуре closure.
+            // Конструктор OfflineRecognizerResult публичный — собираем
+            // комбинированный результат.
             Ok(sherpa_onnx::OfflineRecognizerResult {
-                text: all_text,
-                tokens: all_tokens,
-                timestamps: if all_timestamps.is_empty() {
+                text: acc.text,
+                tokens: acc.tokens,
+                timestamps: if acc.timestamps.is_empty() {
                     None
                 } else {
-                    Some(all_timestamps)
+                    Some(acc.timestamps)
                 },
-                durations: if all_durations.is_empty() {
+                durations: if acc.durations.is_empty() {
                     None
                 } else {
-                    Some(all_durations)
+                    Some(acc.durations)
                 },
             })
         })
@@ -336,7 +319,215 @@ pub async fn transcribe(
     })
 }
 
-// --- helpers ---
+// --- streaming helpers ---
+
+/// Стриминговый читатель WAV. Формат контролируется пайплайном (ffmpeg:
+/// 16 кГц mono PCM s16le), но заголовок разбирается по-честному — как
+/// wave-reader.cc в sherpa-onnx: RIFF/WAVE, обход chunk'ов до `data`,
+/// поддержка PCM s16 (÷32768) и IEEE float32.
+struct WavReader {
+    file: std::fs::File,
+    sample_rate: u32,
+    bytes_per_sample: u64,
+    data_start: u64,
+    data_end: u64,
+    pos: u64,
+}
+
+impl WavReader {
+    fn open(path: &Path) -> AppResult<Self> {
+        let mut file = std::fs::File::open(path)
+            .map_err(|e| AppError::Asr(format!("open {}: {e}", path.display())))?;
+        let mut buf = [0u8; 4096];
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| AppError::Asr(format!("read header {}: {e}", path.display())))?;
+        if n < 44 || &buf[0..4] != b"RIFF" || &buf[8..12] != b"WAVE" {
+            return Err(AppError::Asr(format!("not a WAV file: {}", path.display())));
+        }
+
+        let mut sample_rate: u32 = 0;
+        let mut channels: u16 = 0;
+        let mut bits: u16 = 0;
+        let mut audio_format: u16 = 0;
+        let mut data_start: Option<usize> = None;
+        let mut data_len: u32 = 0;
+
+        // Обход chunk'ов от offset 12 до "data" (chunk'и выровнены по чётному).
+        let mut off = 12usize;
+        while off + 8 <= n {
+            let size = u32::from_le_bytes([
+                buf[off + 4],
+                buf[off + 5],
+                buf[off + 6],
+                buf[off + 7],
+            ]) as usize;
+            match &buf[off..off + 4] {
+                b"fmt " => {
+                    if off + 8 + 16 <= n {
+                        audio_format = u16::from_le_bytes([buf[off + 8], buf[off + 9]]);
+                        channels = u16::from_le_bytes([buf[off + 10], buf[off + 11]]);
+                        sample_rate = u32::from_le_bytes([
+                            buf[off + 12],
+                            buf[off + 13],
+                            buf[off + 14],
+                            buf[off + 15],
+                        ]);
+                        bits = u16::from_le_bytes([buf[off + 22], buf[off + 23]]);
+                    }
+                }
+                b"data" => {
+                    data_start = Some(off + 8);
+                    data_len = size as u32;
+                    break;
+                }
+                _ => {}
+            }
+            off += 8 + size + (size & 1);
+        }
+
+        let data_start = data_start.ok_or_else(|| {
+            AppError::Asr(format!("wav data chunk not found: {}", path.display()))
+        })?;
+        if sample_rate == 0 || channels == 0 || bits == 0 {
+            return Err(AppError::Asr(format!("wav fmt chunk missing: {}", path.display())));
+        }
+        if channels != 1 {
+            return Err(AppError::Asr(format!(
+                "unsupported wav channels: {channels} (expected mono)"
+            )));
+        }
+        let bytes_per_sample = match (audio_format, bits) {
+            (1, 16) => 2u64, // PCM s16
+            (3, 32) => 4u64, // IEEE float32
+            _ => {
+                return Err(AppError::Asr(format!(
+                    "unsupported wav format: audio_format={audio_format}, bits={bits}"
+                )))
+            }
+        };
+
+        file.seek(std::io::SeekFrom::Start(data_start as u64))
+            .map_err(|e| AppError::Asr(format!("seek: {e}")))?;
+
+        Ok(Self {
+            file,
+            sample_rate,
+            bytes_per_sample,
+            data_start: data_start as u64,
+            data_end: data_start as u64 + data_len as u64,
+            pos: data_start as u64,
+        })
+    }
+
+    fn sample_rate(&self) -> i32 {
+        self.sample_rate as i32
+    }
+
+    fn total_samples(&self) -> u64 {
+        (self.data_end - self.data_start) / self.bytes_per_sample
+    }
+
+    /// Прочитать до `max_samples` сэмплов (нормализованных [-1, 1]).
+    /// `None` — конец данных.
+    fn next(&mut self, max_samples: usize) -> AppResult<Option<Vec<f32>>> {
+        let remaining = self.data_end.saturating_sub(self.pos);
+        if remaining == 0 {
+            return Ok(None);
+        }
+        let want = (max_samples as u64 * self.bytes_per_sample).min(remaining);
+        let mut bytes = vec![0u8; want as usize];
+        let mut filled = 0usize;
+        while filled < bytes.len() {
+            let n = self
+                .file
+                .read(&mut bytes[filled..])
+                .map_err(|e| AppError::Asr(format!("read wav: {e}")))?;
+            if n == 0 {
+                break; // файл короче data-чанка — вернём то, что есть
+            }
+            filled += n;
+        }
+        filled -= filled % self.bytes_per_sample as usize;
+        if filled == 0 {
+            return Ok(None);
+        }
+        self.pos += filled as u64;
+        let samples = if self.bytes_per_sample == 2 {
+            bytes[..filled]
+                .chunks_exact(2)
+                .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+                .collect()
+        } else {
+            bytes[..filled]
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect()
+        };
+        Ok(Some(samples))
+    }
+}
+
+/// Аккумулятор результатов декода (общий для всех чанков одной задачи).
+#[derive(Default)]
+struct DecodeAccum {
+    text: String,
+    tokens: Vec<String>,
+    timestamps: Vec<f32>,
+    durations: Vec<f32>,
+    /// Абсолютная позиция последнего декодированного сэмпла (для прогресса).
+    decoded_until: usize,
+    chunks: usize,
+}
+
+/// Декодировать один чанк (абсолютное начало `start_abs`). Чанк длиннее
+/// `strict_limit` режется в самом тихом месте (split_chunk).
+fn decode_chunk(
+    recognizer: &OfflineRecognizer,
+    sample_rate: i32,
+    acc: &mut DecodeAccum,
+    chunk: &[f32],
+    start_abs: usize,
+    strict_limit: usize,
+    cancel: &CancellationToken,
+) -> AppResult<()> {
+    let spans: Vec<(usize, usize)> = if chunk.len() > strict_limit {
+        split_chunk(chunk, strict_limit)
+    } else {
+        vec![(0, chunk.len())]
+    };
+    for (rs, re) in spans {
+        if cancel.is_cancelled() {
+            return Err(AppError::Cancelled);
+        }
+        let abs = start_abs + rs;
+        let stream = recognizer.create_stream();
+        stream.accept_waveform(sample_rate, &chunk[rs..re]);
+        recognizer.decode(&stream);
+        let r = stream
+            .get_result()
+            .ok_or_else(|| AppError::Asr("decode returned no result".into()))?;
+
+        let offset_sec = abs as f32 / sample_rate as f32;
+        let text = r.text.trim();
+        if !text.is_empty() {
+            if !acc.text.is_empty() {
+                acc.text.push(' ');
+            }
+            acc.text.push_str(text);
+        }
+        acc.tokens.extend(r.tokens);
+        if let Some(ts) = r.timestamps {
+            acc.timestamps.extend(ts.iter().map(|&t| t + offset_sec));
+        }
+        if let Some(d) = r.durations {
+            acc.durations.extend(d);
+        }
+        acc.decoded_until = abs + (re - rs);
+        acc.chunks += 1;
+    }
+    Ok(())
+}
 
 /// Найти encoder/decoder/joiner/tokens в `model_dir` (должна быть директорией).
 pub fn discover_model_files(model_dir: &str) -> AppResult<(PathBuf, PathBuf, PathBuf, PathBuf)> {
