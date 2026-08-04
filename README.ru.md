@@ -79,6 +79,7 @@ retries = 3
 overwrite = false
 cookieFile = ""        # файл cookies в формате Netscape
 userAgent = ""
+mirrorPrefix = ""      # префикс-зеркало для загрузок с GitHub, напр. "https://mirror.example.com/"
 
 [asr]
 modelDir = ""          # пусто = авто-скачивание; "cmd:cli --args" = внешний ASR

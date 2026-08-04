@@ -67,6 +67,8 @@ export type DownloadConfig = {
   overwrite: boolean;
   cookieFile?: string;
   userAgent?: string;
+  /** Префикс-зеркало для GitHub-загрузок (yt-dlp, ffmpeg, модели). */
+  mirrorPrefix?: string;
 };
 
 export type AsrDevice = "cpu" | "cuda" | "directml" | "openvino";

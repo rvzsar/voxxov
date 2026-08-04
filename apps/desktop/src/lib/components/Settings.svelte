@@ -175,6 +175,9 @@
       <label class="full">User-Agent (пусто = default)
         <input type="text" value={dl.userAgent ?? ''} placeholder="Mozilla/5.0 ..." title="Свой User-Agent, если сервер блокирует стандартный" oninput={(e) => updateDl({ userAgent: (e.currentTarget as HTMLInputElement).value || undefined })} />
       </label>
+      <label class="full">Зеркало GitHub (пусто = выкл)
+        <input type="text" value={dl.mirrorPrefix ?? ''} placeholder="https://mirror.example.com/" title="Префикс для загрузок yt-dlp/ffmpeg/моделей — для регионов с проблемным доступом к GitHub" oninput={(e) => updateDl({ mirrorPrefix: (e.currentTarget as HTMLInputElement).value || undefined })} />
+      </label>
       <label class="check"><input type="checkbox" checked={dl.audioOnly} onchange={(e) => updateDl({ audioOnly: (e.currentTarget as HTMLInputElement).checked })} />Только аудио</label>
       <label class="check"><input type="checkbox" checked={dl.embedSubs} onchange={(e) => updateDl({ embedSubs: (e.currentTarget as HTMLInputElement).checked })} />Вшить субтитры</label>
       <label class="check"><input type="checkbox" checked={dl.overwrite} onchange={(e) => updateDl({ overwrite: (e.currentTarget as HTMLInputElement).checked })} />Перезапись</label>

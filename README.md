@@ -79,6 +79,7 @@ retries = 3
 overwrite = false
 cookieFile = ""        # Netscape-format cookies file
 userAgent = ""
+mirrorPrefix = ""      # mirror prefix for GitHub downloads, e.g. "https://mirror.example.com/"
 
 [asr]
 modelDir = ""          # empty = auto-download; "cmd:cli --args" = external ASR
