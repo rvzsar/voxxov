@@ -49,8 +49,9 @@ URL or local file
 scripts\dev.cmd
 ```
 
-Installs npm/pnpm deps and starts `tauri dev`. Release builds run on GitHub
-Actions only (tag `v*`).
+Installs npm/pnpm deps and starts `tauri dev`. Prebuilt binaries are
+published on GitHub Releases: versioned builds from `v*` tags, plus a
+`rolling` release rebuilt on every push to `main`.
 
 First run downloads the binaries and models (~330 MB) into `bin/` and
 `models/`. Subsequent runs work offline.

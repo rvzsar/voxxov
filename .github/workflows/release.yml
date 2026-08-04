@@ -2,8 +2,8 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -41,8 +41,6 @@ jobs:
 
       # `--no-bundle` → single portable .exe (no NSIS/MSI installer).
       # `+crt-static` from .cargo/config.toml → no VC++ Redist needed.
-      # tauri-action only builds; softprops below creates the release
-      # and attaches the artifacts.
       - name: Build portable .exe
         uses: tauri-apps/tauri-action@v0
         env:
@@ -51,8 +49,7 @@ jobs:
           projectPath: apps/desktop
           args: --target x86_64-pc-windows-msvc --no-bundle
 
-      # Stage release artifacts (versioned name + README + SHA256 checksums).
-      # Output of this step is uploaded by the next step as release assets.
+      # Stage artifacts: versioned exe name for tags, plain name for rolling.
       - name: Stage release artifacts
         shell: bash
         run: |
@@ -92,7 +89,9 @@ jobs:
           echo "staged:"
           ls -la
 
-      - name: Create release and upload artifacts
+      # Versioned release for tags (v*). Published immediately, not draft.
+      - name: Publish versioned release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -107,10 +106,29 @@ jobs:
             - SHA256 checksums in `SHA256SUMS.txt` (verify with `sha256sum -c SHA256SUMS.txt`)
 
             See `README.txt` for layout and requirements.
-          draft: true
+          draft: false
           prerelease: false
           files: |
             release-stage/voxxov-${{ github.ref_name }}-windows-x86_64.exe
             release-stage/README.txt
             release-stage/SHA256SUMS.txt
           fail_on_unmatched_files: true
+
+      # Rolling release for every main push: created once, assets replaced
+      # afterwards. Never marked as "Latest" — versioned releases keep that.
+      - name: Publish rolling release
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          EXE="release-stage/voxxov-${GITHUB_REF_NAME}-windows-x86_64.exe"
+          if gh release view rolling >/dev/null 2>&1; then
+            gh release upload rolling "${EXE}" release-stage/README.txt release-stage/SHA256SUMS.txt --clobber
+          else
+            gh release create rolling "${EXE}" release-stage/README.txt release-stage/SHA256SUMS.txt \
+              --title "Rolling build (main)" \
+              --notes "Автоматическая сборка из main. Версионные релизы — по тегам v*." \
+              --latest=false
+          fi
