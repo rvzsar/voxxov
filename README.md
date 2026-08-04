@@ -1,104 +1,93 @@
 # Voxxov
 
-Desktop application for video downloading (yt-dlp) and Russian speech recognition using [GigaAM-V3](https://github.com/salute-developers/GigaAM).
+Portable Windows desktop app: download a video (yt-dlp), extract audio (ffmpeg), transcribe Russian speech offline (GigaAM-V3 via sherpa-onnx), export to TXT / SRT / JSON.
 
-Written in Rust (Tauri 2) + Svelte 5. Portable — all data lives next to the executable.
+Rust (Tauri 2) + Svelte 5. All data lives next to the `.exe`.
 
 Русская версия: [README.ru.md](./README.ru.md).
+
+## Features
+
+- Offline ASR — no cloud, audio never leaves the machine
+- Single-pass streaming pipeline: memory stays O(chunk), not O(file)
+- Real-time progress: per-stage %, speed/ETA, ASR RTF (real-time factor)
+- Cancellation at any stage
+- Proxy: SOCKS5 / HTTP(S) with auth and no-proxy list
+- ASR devices: CPU / CUDA / DirectML / OpenVINO, beam search (1–64)
+- External ASR CLI via `cmd:` prefix in `modelDir`
+- Batch processing of local folders (recursive scan)
+- Auto-download of yt-dlp, ffmpeg, GigaAM model and SileroVAD on first run
+- Hardware-aware: ASR threads are picked from physical core count at startup
 
 ## Pipeline
 
 ```
 URL or local file
-  → yt-dlp                 (download)
-  → ffmpeg                 (→ 16 kHz mono WAV)
-  → SileroVad              (segmentation: 0.25–30s speech chunks)
-  → GigaAM-V3 RNN-T INT8   (sherpa-onnx, one decode per chunk)
+  → yt-dlp            download (parallel streams, per-stream progress)
+  → ffmpeg            16 kHz mono WAV
+  → SileroVAD         speech segments (streaming, 64 ms feed)
+  → merge             chunks of 15–22 s (same constants as GigaAM segment_audio_file)
+  → GigaAM-V3         e2e_rnnt, INT8, sherpa-onnx
   → TXT / SRT / JSON
 ```
 
-- Parallel download / ffmpeg stages; single ASR decoder at a time (CPU-serialized via semaphore)
-- Cancellation at any stage
-- SOCKS5 / HTTP(S) proxy with user/pass and no-proxy list
-- ASR devices: CPU / CUDA / DirectML / OpenVINO
-- Beam search (1..64), greedy fallback
-- `cmd:` prefix in `modelDir` — delegate ASR to external CLI
-- Auto-downloads yt-dlp, ffmpeg, GigaAM model, and SileroVad on first launch
-- Real-time progress: per-stage speed / ETA, ASR RTF (real-time factor)
+- Chunks are decoded as soon as they close — one pass over the file
+- Chunks longer than 30 s are split at the quietest point, not in the middle of a word
+- Punctuation and casing are built into the model
+- Every job writes `bench.json` (per-stage wall time, RTF, throughput)
 
-## How ASR works
+## Requirements
 
-1. **SileroVad** (`silero_vad.onnx`, 629 KB) splits the audio into speech segments of 0.25–30 seconds each. Boundaries fall on silences ≥ 500 ms — never mid-word.
-2. Each segment is sent to **GigaAM-V3 RNN-T INT8** (`v3_rnnt_encoder_int8.onnx`, ~215 MB) as a single decode call. The model receives 25–3000 fbank frames of context — enough to recognize whole phrases.
-3. Per-token timestamps from the decoder are grouped into display segments (max 25 tokens or at sentence boundaries).
-4. Output: `text` (full clean text), `tokens` (BPE strings), `timestamps` (per-token seconds), `durations` (per-token durations).
+- Windows 10/11 x64
+- WebView2 runtime (preinstalled on Windows 11)
+- ~1 GB free disk, 8 GB RAM recommended
+- The `.exe` must live in a writable folder (portable, no installer)
 
-The pipeline matches [gigaam.transcribe_longform](https://github.com/salute-developers/GigaAM) and [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) architecture — same model, same config, same chunking strategy.
-
-**WER**: e2e_rnnt head with punctuation and casing built into the model.
-
-## bench.json — per-job performance metrics
-
-Written to `<workdir>/bench.json` after each job:
-
-```json
-{
-  "metadata_sec":      3.49,
-  "download_sec":    660.31,
-  "extract_sec":       0.62,
-  "transcribe_sec":  926.45,
-  "total_sec":      1593.08,
-  "asr_rtf":           0.051,
-  "asr_throughput":  313497.72,
-  "extract_mb_per_sec": 230.09
-}
-```
-
-- `*_sec` — wall-clock time per stage
-- `asr_rtf` — Real-Time Factor: `transcribe_sec / audio_duration_sec`. < 1.0 means faster than real-time
-- `asr_throughput` — audio samples processed per second of wall time
-- `extract_mb_per_sec` — ffmpeg input MB per second
-
-## Quick Start
+## Getting started
 
 ```cmd
 scripts\dev.cmd
 ```
 
-Auto-downloads:
-- `yt-dlp.exe`, `ffmpeg.exe` → `<exe_dir>/bin/`
-- 4 GigaAM-V3 RNN-T files (encoder_int8, decoder, joint, tokens) + `silero_vad.onnx` → `<exe_dir>/models/`
+Installs npm/pnpm deps and starts `tauri dev`. Release builds run on GitHub
+Actions only (tag `v*`).
 
-If the executable lives in a read-only location, the app panics at startup with a clear error.
+First run downloads the binaries and models (~330 MB) into `bin/` and
+`models/`. Subsequent runs work offline.
 
 ## Configuration
 
-`<exe_dir>/data/config.toml` — all sections optional, defaults applied if the file or any section is missing.
+`<exe_dir>/data/config.toml` — all sections optional, defaults apply.
 
 ```toml
 [proxy]
-kind = "socks5"        # none | http | https | socks5
+kind = "none"          # none | http | https | socks5
 host = "127.0.0.1"
 port = 1080
+username = ""
+password = ""
 noProxy = "localhost,127.0.0.1"
 
 [download]
 format = "bv*+ba/b"
 maxHeight = 1080       # 0 = no limit
 audioOnly = false
+embedSubs = false
 concurrentFragments = 4
 retries = 3
+overwrite = false
+cookieFile = ""        # Netscape-format cookies file
 userAgent = ""
 
 [asr]
-modelDir = ""          # empty = auto-download; "cmd:..." = external CLI
-sampleRate = 16000
+modelDir = ""          # empty = auto-download; "cmd:cli --args" = external ASR
+sampleRate = 16000     # fixed: GigaAM/VAD are 16 kHz only
 language = "ru"
 device = "cpu"         # cpu | cuda | directml | openvino
-beamSize = 5
+beamSize = 5           # 1 = greedy
 
 [output]
-dir = ""                # copy transcripts here too; empty = job folder only
+dir = ""               # copy transcripts here too; empty = job folder only
 formats = ["txt", "srt", "json"]
 
 [logging]
@@ -111,29 +100,43 @@ keepFiles = 3
 ## Layout
 
 ```
-Voxxov/
-├── voxxov.exe
-├── data/             # config.toml, logs/, jobs/<id>/
-├── models/           # GigaAM-V3 + silero_vad.onnx (auto-downloaded)
-└── bin/              # yt-dlp, ffmpeg (auto-downloaded)
+voxxov.exe
+├── data/
+│   ├── config.toml
+│   ├── logs/app.log
+│   └── jobs/<job_id>/   ← video, audio.wav, transcript.{txt,srt,json}, bench.json
+├── models/              ← GigaAM-V3 + silero_vad.onnx (auto-downloaded)
+└── bin/                 ← yt-dlp.exe, ffmpeg.exe (auto-downloaded)
 ```
 
-## Build
+## Performance
 
-- Dev: `scripts\dev.cmd` (Windows)
-- Release: GitHub Actions only (`release.yml`)
+`<job_id>/bench.json` after each job:
+
+```json
+{
+  "metadata_sec": 3.5,
+  "download_sec": 648.4,
+  "extract_sec": 2.2,
+  "transcribe_sec": 267.8,
+  "total_sec": 922.2,
+  "asr_rtf": 0.09,
+  "asr_throughput": 313497.7,
+  "extract_mb_per_sec": 230.1
+}
+```
+
+`asr_rtf` < 1.0 means faster than real-time. On a mid-range desktop CPU the
+transcribe stage runs at roughly 0.09× real-time (≈11× faster than the
+audio duration).
 
 ## License
 
-**GPL-3.0-only** — see [LICENSE](./LICENSE).
+App: **GPL-3.0-only** — see [LICENSE](./LICENSE).
 
-GigaAM-V3 e2e_rnnt model files are downloaded from the `model-gigaam-v3` release of [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite); `silero_vad.onnx` comes from the official [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) releases. The GigaAM model is developed by [Salute Developers (Sber)](https://github.com/salute-developers/GigaAM) and is released under the **MIT license**.
-
-## Credits
-
-- [GigaAM](https://github.com/salute-developers/GigaAM) — speech recognition model, Salute Developers (Sber)
-- [ekhodzitsky/gigastt](https://github.com/ekhodzitsky/gigastt) — GigaAM parameter research and benchmarks
-- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (csukuangfj) — ONNX runtime, static-linked C library for ASR inference (Apache-2.0)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — video downloader (Unlicense)
-- [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) — ffmpeg Windows binaries (GPL)
-- [Tauri](https://github.com/tauri-apps/tauri) — desktop application framework (Apache-2.0 / MIT)
+Third-party components:
+- [GigaAM](https://github.com/salute-developers/GigaAM) (Sber) — MIT; model files are downloaded from the `model-gigaam-v3` release of [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite)
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — Apache-2.0; `silero_vad.onnx` from its official releases
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — Unlicense
+- [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) — GPL
+- [Tauri](https://github.com/tauri-apps/tauri) — Apache-2.0 / MIT
