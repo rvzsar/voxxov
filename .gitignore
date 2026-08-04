@@ -63,3 +63,6 @@ gigaam-desktop-*.zip
 # --- Runtime data (per-job videos/audio/transcripts, downloaded models, logs) ---
 # Создаётся рядом с .exe при первом запуске. Не для гита.
 data/
+
+# Playwright MCP screenshots/snapshots (local testing)
+.playwright-mcp/
