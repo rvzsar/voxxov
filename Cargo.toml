@@ -59,6 +59,10 @@ chrono = { version = "0.4" }
 once_cell = "1"
 parking_lot = "0.12"
 sha2 = "0.10"
+# Faster global allocator than the MSVC default (alloc-heavy paths:
+# per-chunk token vectors, yt-dlp stderr parsing). See
+# https://github.com/microsoft/mimalloc
+mimalloc = "0.1"
 
 # (lofty patch removed — was only needed for the old yt-dlp crate
 #  which depended on a yanked 0.23.x. With subprocess yt-dlp gone.)

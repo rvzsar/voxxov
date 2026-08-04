@@ -98,7 +98,7 @@ device = "cpu"         # cpu | cuda | directml | openvino
 beamSize = 5
 
 [output]
-dir = ""
+dir = ""                # дополнительно копировать транскрипты сюда; пусто = только папка задачи
 formats = ["txt", "srt", "json"]
 
 [logging]

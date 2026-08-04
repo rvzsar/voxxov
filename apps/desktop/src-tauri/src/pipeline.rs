@@ -273,6 +273,23 @@ async fn run_inner(
 
     // Полный текст (без обрезки) — UI сам обрежет при показе.
 
+    // Если задан [output].dir — продублировать транскрипты туда. Основные
+    // артефакты остаются в workdir (save_job/reveal работают как раньше).
+    if !cfg.output.dir.trim().is_empty() {
+        let out_dir = PathBuf::from(cfg.output.dir.trim());
+        if let Err(e) = std::fs::create_dir_all(&out_dir) {
+            state.log_line(&job.id, format!("output dir: create {}: {e}", out_dir.display()));
+        } else {
+            for fmt in &cfg.output.formats {
+                let src = workdir.join(format!("transcript.{fmt}"));
+                let dst = out_dir.join(format!("transcript.{fmt}"));
+                if let Err(e) = std::fs::copy(&src, &dst) {
+                    state.log_line(&job.id, format!("output dir: copy {}: {e}", dst.display()));
+                }
+            }
+        }
+    }
+
     timings.total_sec = started.elapsed().as_secs_f32();
     // Per-stage timings в <workdir>/bench.json. Пишем best-effort:
     // ошибка сериализации/I-O не должна ломать успешный job.

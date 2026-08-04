@@ -105,6 +105,7 @@ pub enum AsrDevice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct OutputConfig {
+    /// Куда дополнительно копировать транскрипты; пусто = только workdir.
     pub dir: String,
     pub formats: Vec<String>,
 }

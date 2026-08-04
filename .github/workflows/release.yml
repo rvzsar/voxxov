@@ -79,8 +79,7 @@ jobs:
           Auto-created layout next to the .exe
             data/config.toml     settings
             data/logs/app.log    log file (rotating)
-            data/jobs/<uuid>/    per-task workdir
-            data/transcripts/    final transcripts (if [output].dir empty)
+            data/jobs/<uuid>/    per-task workdir (video, audio, transcripts)
             models/              auto-downloaded GigaAM-V3 (4 files, ~330 MB)
             bin/                 auto-downloaded yt-dlp, ffmpeg
 

@@ -83,6 +83,7 @@ export type AsrConfig = {
 };
 
 export type OutputConfig = {
+  /** Куда дополнительно копировать транскрипты; пусто = только workdir. */
   dir: string;
   formats: string[];
 };

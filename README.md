@@ -98,7 +98,7 @@ device = "cpu"         # cpu | cuda | directml | openvino
 beamSize = 5
 
 [output]
-dir = ""
+dir = ""                # copy transcripts here too; empty = job folder only
 formats = ["txt", "srt", "json"]
 
 [logging]
