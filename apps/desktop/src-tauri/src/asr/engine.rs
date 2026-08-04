@@ -94,6 +94,8 @@ pub async fn transcribe(
 
     // WAV-чтение + создание recognizer + decode (всё sync, в blocking pool).
     let audio_path = audio.to_path_buf();
+    // `model_dir` — заимствованная ссылка; spawn_blocking требует 'static.
+    let model_dir_owned = model_dir.to_string();
     // Clone для UI progress-emit'ов внутри spawn_blocking (closure).
     let state_for_progress = state.clone();
     let job_id_owned = job_id.to_string();
@@ -145,9 +147,10 @@ pub async fn transcribe(
             // Размер энкодера в ключе — страховка от подмены файлов модели
             // на лету (устаревшая сессия).
             let enc_size = std::fs::metadata(&encoder).map(|m| m.len()).unwrap_or(0);
-            let cache_key = format!("{model_dir}|{provider}|{num_threads}|{beam}|{enc_size}");
+            let cache_key =
+                format!("{model_dir_owned}|{provider}|{num_threads}|{beam}|{enc_size}");
             let cache = RECOGNIZER_CACHE.get_or_init(|| Mutex::new((String::new(), None)));
-            let cache_guard = cache.lock();
+            let mut cache_guard = cache.lock();
             if cache_guard.0 != cache_key {
                 cache_guard.1 = Some(OfflineRecognizer::create(&config).ok_or_else(|| {
                     AppError::Asr(
