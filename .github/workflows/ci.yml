@@ -25,8 +25,11 @@ jobs:
           npm run check
 
   build-windows:
-    name: Build (windows-msvc, portable)
+    name: Build (${{ matrix.profile }}, portable)
     runs-on: windows-latest
+    strategy:
+      matrix:
+        profile: [debug, release]
     steps:
       - uses: actions/checkout@v4
 
@@ -60,20 +63,22 @@ jobs:
       # Combined with `+crt-static` from .cargo/config.toml, the .exe
       # needs only WebView2 runtime (preinstalled on Win 11) — no VC++
       # Redist, no installer, copy-anywhere portable.
-      - name: Build portable .exe (debug)
+      # Debug build = быстрый цикл для проверки фич; release build =
+      # opt-level 3 + LTO (репрезентативные замеры производительности).
+      - name: Build portable .exe
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/desktop
-          args: --debug --target x86_64-pc-windows-msvc --no-bundle
+          args: ${{ matrix.profile == 'debug' && '--debug' || '' }} --target x86_64-pc-windows-msvc --no-bundle
 
       # Cargo workspace puts target/ at the repo root, not inside the
       # crate, so the path is `target/...` (not `apps/desktop/src-tauri/target/...`).
       - name: Upload portable .exe
         uses: actions/upload-artifact@v4
         with:
-          name: voxxov-windows-msvc-portable
-          path: target/x86_64-pc-windows-msvc/debug/voxxov.exe
+          name: voxxov-windows-msvc-${{ matrix.profile }}
+          path: target/x86_64-pc-windows-msvc/${{ matrix.profile }}/voxxov.exe
           if-no-files-found: error
           retention-days: 14
