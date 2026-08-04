@@ -136,7 +136,11 @@ pub fn check_status(model_dir: &Path) -> ModelStatus {
 
 /// Скачать все отсутствующие файлы. `progress` вызывается после
 /// каждого скачанного файла: (downloaded, total).
-pub async fn download_all<F>(model_dir: &Path, mut progress: F) -> AppResult<ModelStatus>
+pub async fn download_all<F>(
+    model_dir: &Path,
+    mirror: Option<&str>,
+    mut progress: F,
+) -> AppResult<ModelStatus>
 where
     F: FnMut(u64, u64) + Send,
 {
@@ -177,7 +181,7 @@ where
                 .unwrap_or(0),
             url
         );
-        download_file(&url, &target).await?;
+        download_file(&url, &target, mirror).await?;
         let actual = std::fs::metadata(&target)
             .map_err(|e| AppError::Other(format!("stat {}: {e}", target.display())))?
             .len();
@@ -211,28 +215,14 @@ where
     Ok(check_status(model_dir))
 }
 
-/// Скачать один файл через `reqwest`.
-async fn download_file(url: &str, target: &Path) -> AppResult<()> {
+/// Скачать один файл через `reqwest`. При ошибке — через зеркало (если задано).
+async fn download_file(url: &str, target: &Path, mirror: Option<&str>) -> AppResult<()> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60 * 30))
         .connect_timeout(Duration::from_secs(30))
         .build()
         .map_err(|e| AppError::Other(format!("http client: {e}")))?;
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| AppError::Other(format!("GET {url}: {e}")))?;
-    if !resp.status().is_success() {
-        return Err(AppError::Other(format!(
-            "GET {url}: HTTP {}",
-            resp.status()
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::Other(format!("read body {url}: {e}")))?;
+    let bytes = crate::ytdlp::fetch_bytes(&client, url, mirror).await?;
     // Пишем через tmp + rename для атомарности.
     let tmp = target.with_extension("tmp");
     std::fs::write(&tmp, &bytes)
@@ -248,7 +238,7 @@ pub fn default_model_dir() -> PathBuf {
 }
 
 /// Streaming SHA256, чтобы не грузить encoder (~319 MB) в память.
-fn verify_sha256(target: &Path, expected_hex: &str) -> AppResult<()> {
+pub(crate) fn verify_sha256(target: &Path, expected_hex: &str) -> AppResult<()> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
     let mut file = std::fs::File::open(target)

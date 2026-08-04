@@ -32,7 +32,8 @@ async fn ensure_asr_model(state: &AppState, job_id: &str) -> AppResult<PathBuf> 
             status.release_tag
         ),
     );
-    models::download_all(&dir, |downloaded, total| {
+    let mirror = state.config().download.mirror_prefix.clone();
+    models::download_all(&dir, mirror.as_deref(), |downloaded, total| {
         // Per-file callback, межфайловый прогресс не виден — только лог.
         tracing::info!("model: {} / {} bytes", downloaded, total);
     })
@@ -151,7 +152,11 @@ async fn run_inner(
     } else {
         state.set_stage(&job.id, JobStage::FetchingMetadata, "Получаем метаданные…");
         let t = Instant::now();
-        let media = crate::ytdlp::YtDlpRunner::fetch_metadata(&job.url).await?;
+        let media = crate::ytdlp::YtDlpRunner::fetch_metadata(
+            &job.url,
+            cfg.download.mirror_prefix.as_deref(),
+        )
+        .await?;
         timings.metadata_sec = Some(t.elapsed().as_secs_f32());
         state.update_job(
             &job.id,

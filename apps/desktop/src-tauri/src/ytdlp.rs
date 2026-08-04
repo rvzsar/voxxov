@@ -33,15 +33,15 @@ impl YtDlpRunner {
     /// Ensure `yt-dlp.exe` + `ffmpeg.exe` are present (downloads if missing).
     /// Called eagerly at startup so the first user action doesn't wait
     /// for a 20MB download.
-    pub async fn preflight() -> AppResult<()> {
-        ensure_ytdlp().await?;
-        ensure_ffmpeg().await?;
+    pub async fn preflight(mirror: Option<&str>) -> AppResult<()> {
+        ensure_ytdlp(mirror).await?;
+        ensure_ffmpeg(mirror).await?;
         Ok(())
     }
 
     /// Fetch video metadata via `yt-dlp --dump-json`. One-shot, no progress.
-    pub async fn fetch_metadata(url: &str) -> AppResult<MediaInfo> {
-        ensure_ytdlp().await?;
+    pub async fn fetch_metadata(url: &str, mirror: Option<&str>) -> AppResult<MediaInfo> {
+        ensure_ytdlp(mirror).await?;
 
         let mut cmd = Command::new(crate::sidecar::yt_dlp_path());
         cmd.arg("--dump-json")
@@ -93,7 +93,7 @@ impl YtDlpRunner {
         cfg: &AppConfig,
         cancel: CancellationToken,
     ) -> AppResult<PathBuf> {
-        ensure_ytdlp().await?;
+        ensure_ytdlp(cfg.download.mirror_prefix.as_deref()).await?;
         std::fs::create_dir_all(out_dir).map_err(AppError::Io)?;
 
         let output_template = out_dir.join("source.%(ext)s");
@@ -567,26 +567,49 @@ fn parse_total_bytes(after: &str) -> Option<f64> {
     Some(num * mult)
 }
 
-// --- auto-download ---
+// --- auto-download (yt-dlp, ffmpeg) ---
 
-async fn ensure_ytdlp() -> AppResult<PathBuf> {
+/// SHA256 берём из GitHub API (digest ассета) — не устаревает при latest.
+/// Если API недоступен — качаем по фиксированному URL без проверки хеша.
+async fn ensure_ytdlp(mirror: Option<&str>) -> AppResult<PathBuf> {
     let path = crate::sidecar::yt_dlp_path();
     if path.is_file() {
         return Ok(path);
     }
-    info!("yt-dlp: downloading from {YT_DLP_URL}");
-    download_to(YT_DLP_URL, &path).await?;
+    let client = http_client()?;
+    let (url, expected_sha) = match latest_asset("yt-dlp/yt-dlp", "yt-dlp.exe", &client).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("yt-dlp: GitHub API unavailable ({e}); downloading without hash");
+            (YT_DLP_URL.to_string(), None)
+        }
+    };
+    info!("yt-dlp: downloading from {url}");
+    let bytes = fetch_bytes(&client, &url, mirror).await?;
+    write_verified(&bytes, &path, expected_sha.as_deref(), "yt-dlp")?;
     info!("yt-dlp: ready at {}", path.display());
     Ok(path)
 }
 
-async fn ensure_ffmpeg() -> AppResult<PathBuf> {
+async fn ensure_ffmpeg(mirror: Option<&str>) -> AppResult<PathBuf> {
     let path = crate::sidecar::ffmpeg_path();
     if path.is_file() {
         return Ok(path);
     }
-    info!("ffmpeg: downloading from {FFMPEG_URL}");
-    download_ffmpeg_zip().await?;
+    let client = http_client()?;
+    let (url, expected_sha) =
+        match latest_asset("BtbN/FFmpeg-Builds", "ffmpeg-master-latest-win64-gpl.zip", &client)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("ffmpeg: GitHub API unavailable ({e}); downloading without hash");
+                (FFMPEG_URL.to_string(), None)
+            }
+        };
+    info!("ffmpeg: downloading from {url}");
+    let bytes = fetch_bytes(&client, &url, mirror).await?;
+    download_ffmpeg_zip(&bytes, expected_sha.as_deref()).await?;
     if !path.is_file() {
         return Err(AppError::YtDlp(format!(
             "ffmpeg.exe not found in downloaded archive (expected at {})",
@@ -597,8 +620,68 @@ async fn ensure_ffmpeg() -> AppResult<PathBuf> {
     Ok(path)
 }
 
-async fn download_to(url: &str, target: &Path) -> AppResult<()> {
-    let client = http_client()?;
+/// URL ассета + SHA256 digest из GitHub API latest-release.
+async fn latest_asset(
+    repo: &str,
+    asset_name: &str,
+    client: &reqwest::Client,
+) -> AppResult<(String, Option<String>)> {
+    let api_url = format!("https://api.github.com/repos/{repo}/releases/latest");
+    let resp = client
+        .get(&api_url)
+        .header("User-Agent", "voxxov")
+        .send()
+        .await
+        .map_err(|e| AppError::YtDlp(format!("GET {api_url}: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(AppError::YtDlp(format!(
+            "GET {api_url}: HTTP {}",
+            resp.status()
+        )));
+    }
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| AppError::YtDlp(format!("api body {api_url}: {e}")))?;
+    let json: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| AppError::YtDlp(format!("api json {api_url}: {e}")))?;
+    for asset in json["assets"].as_array().into_iter().flatten() {
+        if asset["name"].as_str() == Some(asset_name) {
+            let url = asset["browser_download_url"].as_str().unwrap_or_default();
+            if !url.is_empty() {
+                return Ok((
+                    url.to_string(),
+                    asset["digest"].as_str().map(|s| s.to_string()),
+                ));
+            }
+        }
+    }
+    Err(AppError::YtDlp(format!(
+        "asset {asset_name} not found in {repo} latest release"
+    )))
+}
+
+/// Скачать тело: прямой URL, при ошибке — через зеркало (если настроено).
+pub(crate) async fn fetch_bytes(
+    client: &reqwest::Client,
+    url: &str,
+    mirror: Option<&str>,
+) -> AppResult<Vec<u8>> {
+    let mut candidates = vec![url.to_string()];
+    if let Some(m) = mirror.map(str::trim).filter(|m| !m.is_empty()) {
+        candidates.push(format!("{m}{url}"));
+    }
+    let mut last_err = None;
+    for u in candidates {
+        match get_bytes(client, &u).await {
+            Ok(b) => return Ok(b),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| AppError::YtDlp(format!("GET {url}: failed"))))
+}
+
+async fn get_bytes(client: &reqwest::Client, url: &str) -> AppResult<Vec<u8>> {
     let resp = client
         .get(url)
         .send()
@@ -610,42 +693,58 @@ async fn download_to(url: &str, target: &Path) -> AppResult<()> {
             resp.status()
         )));
     }
-    let bytes = resp
-        .bytes()
+    resp.bytes()
         .await
-        .map_err(|e| AppError::YtDlp(format!("read body {url}: {e}")))?;
+        .map(|b| b.to_vec())
+        .map_err(|e| AppError::YtDlp(format!("read body {url}: {e}")))
+}
+
+/// Атомарная запись (tmp + rename) с SHA256-проверкой до переименования.
+fn write_verified(
+    bytes: &[u8],
+    target: &Path,
+    expected_sha: Option<&str>,
+    what: &str,
+) -> AppResult<()> {
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(AppError::Io)?;
     }
-    std::fs::write(target, &bytes).map_err(AppError::Io)?;
+    let tmp = target.with_extension("tmp");
+    std::fs::write(&tmp, bytes).map_err(AppError::Io)?;
+    match expected_sha {
+        Some(sha) => {
+            if let Err(e) = crate::models::verify_sha256(&tmp, sha) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+        }
+        None => tracing::warn!("{what}: no SHA256 available, skipped verification"),
+    }
+    std::fs::rename(&tmp, target).map_err(AppError::Io)?;
     Ok(())
 }
 
-async fn download_ffmpeg_zip() -> AppResult<()> {
-    let client = http_client()?;
-    let resp = client
-        .get(FFMPEG_URL)
-        .send()
-        .await
-        .map_err(|e| AppError::YtDlp(format!("GET {FFMPEG_URL}: {e}")))?;
-    if !resp.status().is_success() {
-        return Err(AppError::YtDlp(format!(
-            "GET {FFMPEG_URL}: HTTP {}",
-            resp.status()
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::YtDlp(format!("read body: {e}")))?;
-
+async fn download_ffmpeg_zip(bytes: &[u8], expected_sha: Option<&str>) -> AppResult<()> {
     let bin_dir = crate::sidecar::bin_dir();
     std::fs::create_dir_all(&bin_dir).map_err(AppError::Io)?;
 
+    let tmp_zip = bin_dir.join("ffmpeg.tmp.zip");
+    std::fs::write(&tmp_zip, bytes).map_err(AppError::Io)?;
+    match expected_sha {
+        Some(sha) => {
+            if let Err(e) = crate::models::verify_sha256(&tmp_zip, sha) {
+                let _ = std::fs::remove_file(&tmp_zip);
+                return Err(e);
+            }
+        }
+        None => tracing::warn!("ffmpeg: no SHA256 available, skipped verification"),
+    }
+
     // BtbN's zip layout: ffmpeg-master-latest-win64-gpl/bin/{ffmpeg,ffprobe}.exe
-    let cursor = std::io::Cursor::new(bytes);
+    let file = std::fs::File::open(&tmp_zip)
+        .map_err(|e| AppError::YtDlp(format!("open zip: {e}")))?;
     let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| AppError::YtDlp(format!("open zip: {e}")))?;
+        zip::ZipArchive::new(file).map_err(|e| AppError::YtDlp(format!("open zip: {e}")))?;
 
     for i in 0..archive.len() {
         let mut file = archive
@@ -662,6 +761,7 @@ async fn download_ffmpeg_zip() -> AppResult<()> {
             info!("ffmpeg: extracted {}", target.display());
         }
     }
+    let _ = std::fs::remove_file(&tmp_zip);
     Ok(())
 }
 

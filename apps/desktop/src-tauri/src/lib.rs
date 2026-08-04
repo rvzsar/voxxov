@@ -73,8 +73,9 @@ pub fn run() {
             // `app.state::<AppState>()` сразу проверять состояние.
             let mut events_rx = state.events.subscribe();
             app.manage(state);
+            let mirror = cfg.download.mirror_prefix.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = crate::ytdlp::YtDlpRunner::preflight().await {
+                if let Err(e) = crate::ytdlp::YtDlpRunner::preflight(mirror.as_deref()).await {
                     tracing::warn!("yt-dlp preflight failed: {e}");
                 }
             });

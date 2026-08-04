@@ -49,6 +49,10 @@ pub struct DownloadConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cookie_file: Option<String>,
     pub user_agent: Option<String>,
+    /// Префикс-зеркало для GitHub-загрузок (yt-dlp, ffmpeg, модели),
+    /// напр. "https://mirror.example.com/" — для регионов с блокировками.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mirror_prefix: Option<String>,
 }
 
 impl Default for DownloadConfig {
@@ -63,6 +67,7 @@ impl Default for DownloadConfig {
             overwrite: false,
             cookie_file: None,
             user_agent: None,
+            mirror_prefix: None,
         }
     }
 }
