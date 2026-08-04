@@ -1,12 +1,11 @@
 //! CLI-args для yt-dlp из `ProxyConfig`.
 //!
-//! Используем `--proxy` (а не `DownloaderBuilder::with_proxy`), чтобы
-//! не зависеть от точной сигнатуры крейте `yt-dlp`. URL percent-encoding
-//! делает `url::Url` (см. `ProxyConfig::to_ytdlp_arg`).
+//! Зовём `yt-dlp.exe` напрямую, поэтому прокси передаётся через `--proxy`.
+//! User/password percent-кодирует `reqwest::Url`.
 
 use crate::config::{ProxyConfig, ProxyKind};
 
-/// Args для `Downloader::append_args`.
+/// Args для командной строки yt-dlp.
 pub fn to_args(cfg: &ProxyConfig) -> Vec<String> {
     let mut args = Vec::new();
 

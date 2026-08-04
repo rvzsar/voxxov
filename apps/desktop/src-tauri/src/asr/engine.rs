@@ -17,10 +17,18 @@ use crate::config::AsrConfig;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 use crate::types::{JobUpdate, Progress};
+use parking_lot::Mutex;
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+
+/// Кэш распознавателя: одна ORT-сессия на конфигурацию, а не на задачу.
+/// Создание сессии грузит ~320MB модели — на очереди из нескольких задач
+/// это повторялось бы для каждой. Ключ — всё, что влияет на конфигурацию.
+/// Декоды сериализованы семафором `asr_permits`, поэтому лок не конкурирует.
+static RECOGNIZER_CACHE: OnceLock<Mutex<(String, Option<OfflineRecognizer>)>> = OnceLock::new();
 
 /// Main entry point: transcribe audio file → text + timed segments.
 /// `model_dir` — директория с 4 файлами GigaAM; проверка/загрузка
@@ -69,7 +77,9 @@ pub async fn transcribe(
         // Openvino = cpu в текущей версии sherpa-onnx.
         _ => "cpu",
     };
-    let num_threads = num_cpus().min(4);
+    // int8 энкодер масштабируется до ~8 потоков на десктопных CPU; дальше
+    // упор в пропускную способность памяти, лишние потоки вредят.
+    let num_threads = num_cpus().min(8);
     let beam_size = cfg.beam_size;
 
     state.log_line(
@@ -95,28 +105,12 @@ pub async fn transcribe(
                 return Err(AppError::Asr("no audio samples".into()));
             }
             let sample_rate = wave.sample_rate();
-            // Диагностика: что реально получает sherpa-onnx. Если в логе видно
-            // samples.len() / sample_rate ≈ длительности файла, а не ~100×короче
-            // (что соответствовало бы fbank frames), значит энкодер получает raw
-            // samples вместо фичей и упрётся в max_seq_len (~5000 для Conformer).
             tracing::info!(
                 "ASR: {} samples @ {}Hz ({:.1}s) from {}",
                 samples.len(),
                 sample_rate,
                 samples.len() as f32 / sample_rate as f32,
                 audio_path.display()
-            );
-
-            // Diagnostic: check sample range
-            let (s_min, s_max) = samples
-                .iter()
-                .fold((f32::MAX, f32::MIN), |(mn, mx), &s| (mn.min(s), mx.max(s)));
-            let s_mean: f32 = samples.iter().map(|s| s.abs()).sum::<f32>() / samples.len() as f32;
-            tracing::info!(
-                "ASR samples: min={:.4} max={:.4} mean_abs={:.4}",
-                s_min,
-                s_max,
-                s_mean
             );
 
             let mut config = OfflineRecognizerConfig::default();
@@ -144,11 +138,23 @@ pub async fn transcribe(
                 config.max_active_paths = beam as i32;
             }
 
-            let recognizer = OfflineRecognizer::create(&config).ok_or_else(|| {
-                AppError::Asr(
-                    "failed to create OfflineRecognizer — check model paths and provider".into(),
-                )
-            })?;
+            // Сессия переиспользуется между задачами (кэш выше): загрузка
+            // модели — один раз на конфигурацию, а не на каждую задачу.
+            // Размер энкодера в ключе — страховка от подмены файлов модели
+            // на лету (устаревшая сессия).
+            let enc_size = std::fs::metadata(&encoder).map(|m| m.len()).unwrap_or(0);
+            let cache_key = format!("{model_dir}|{provider}|{num_threads}|{beam}|{enc_size}");
+            let cache = RECOGNIZER_CACHE.get_or_init(|| Mutex::new((String::new(), None)));
+            let cache_guard = cache.lock();
+            if cache_guard.0 != cache_key {
+                cache_guard.1 = OfflineRecognizer::create(&config).ok_or_else(|| {
+                    AppError::Asr(
+                        "failed to create OfflineRecognizer — check model paths and provider".into(),
+                    )
+                })?;
+                cache_guard.0 = cache_key;
+            }
+            let recognizer = cache_guard.1.as_ref().unwrap();
 
             // Чанки определяются VAD + merge_segments в segmentation.rs
             // (15-22 сек, как в GigaAM transcribe_longform).
@@ -158,13 +164,10 @@ pub async fn transcribe(
             let mut all_timestamps: Vec<f32> = Vec::new();
             let mut all_durations: Vec<f32> = Vec::new();
 
-            // SileroVad + merge_segments: сегменты склеиваются в чанки
-            // по 15-22 сек (как в GigaAM transcribe_longform).
             // `sample_rate` is i32 в sherpa_onnx::Wave; VAD принимает u32.
             let chunks: Vec<(usize, usize)> =
                 super::segmentation::find_speech_segments(&samples, sample_rate as u32);
 
-            // Diagnostic: log VAD segments
             tracing::info!(
                 "ASR VAD: {} segments from {} samples ({:.1}s)",
                 chunks.len(),
@@ -172,16 +175,13 @@ pub async fn transcribe(
                 total as f32 / sample_rate as f32
             );
             for (i, &(s, e)) in chunks.iter().enumerate().take(20) {
-                tracing::info!(
+                tracing::debug!(
                     "ASR VAD seg[{}]: {}..{} ({:.2}s)",
                     i,
                     s,
                     e,
                     (e - s) as f32 / sample_rate as f32
                 );
-            }
-            if chunks.len() > 20 {
-                tracing::info!("ASR VAD: ... and {} more segments", chunks.len() - 20);
             }
 
             // Throttled UI progress: раз в 2 сек + на последнем чанке.
@@ -210,7 +210,6 @@ pub async fn transcribe(
                 let chunk_offset_sec = chunk_start as f32 / sample_rate as f32;
                 let chunk_text = r.text.trim();
 
-                // Diagnostic: log each chunk result
                 let text_preview: String = chunk_text.chars().take(80).collect();
                 tracing::debug!(
                     "ASR chunk[{}/{}]: samples {}..{} ({:.2}s) tokens={} text={:?}",

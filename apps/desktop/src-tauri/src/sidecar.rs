@@ -1,8 +1,4 @@
 //! yt-dlp and ffmpeg binaries live in `<data_root>/bin/`, next to the .exe.
-//!
-//! The `yt-dlp` Rust crate handles the actual download on first use — we
-//! just point it at our bin dir via `Libraries::new(...)` and
-//! `Downloader::with_new_binaries(...)` in `ytdlp.rs`.
 
 use crate::paths;
 use std::path::PathBuf;

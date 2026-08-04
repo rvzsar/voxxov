@@ -4,13 +4,10 @@
 //!
 //! ```text
 //! voxxov.exe
-//! ├── data/                  ← mutable state
+//! ├── data/
 //! │   ├── config.toml
 //! │   ├── logs/app.log
-//! │   ├── cache/
-//! │   ├── downloads/         ← yt-dlp temp outputs
-//! │   ├── jobs/<job_id>/
-//! │   └── transcripts/<title>.{txt,srt,json}
+//! │   └── jobs/<job_id>/
 //! ├── models/                ← ASR model files (auto-discovered)
 //! └── bin/                   ← yt-dlp.exe, ffmpeg.exe (auto-downloaded)
 //! ```
@@ -73,15 +70,6 @@ pub fn config_path() -> PathBuf {
 pub fn logs_dir() -> PathBuf {
     data().join("logs")
 }
-pub fn cache_dir() -> PathBuf {
-    data().join("cache")
-}
-pub fn downloads_dir() -> PathBuf {
-    data().join("downloads")
-}
-pub fn transcripts_dir() -> PathBuf {
-    data().join("transcripts")
-}
 pub fn jobs_dir() -> PathBuf {
     data().join("jobs")
 }
@@ -100,9 +88,6 @@ pub fn ensure_all() -> std::io::Result<()> {
     for d in [
         data(),
         logs_dir(),
-        cache_dir(),
-        downloads_dir(),
-        transcripts_dir(),
         jobs_dir(),
         model_dir(),
         bin_dir(),

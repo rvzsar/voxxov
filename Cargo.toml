@@ -39,7 +39,6 @@ toml = "0.8"
 # (data-root resolved via std::env::current_exe() — no third-party path crate)
 
 # Errors & logging
-anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
 # json feature removed: we use plain fmt, not JSON-formatted logs.

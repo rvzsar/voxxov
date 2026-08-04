@@ -116,10 +116,6 @@ impl AppState {
             .send(BackendEvent::JobLog { id: id.to_string(), line });
     }
 
-    pub fn get_job(&self, id: &str) -> Option<Job> {
-        self.jobs.read().get(id).cloned()
-    }
-
     pub fn list_jobs(&self) -> Vec<Job> {
         let mut v: Vec<Job> = self.jobs.read().values().cloned().collect();
         v.sort_by(|a, b| b.created_at.cmp(&a.created_at));

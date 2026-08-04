@@ -6,7 +6,6 @@ import type {
   FileInfo,
   Job,
   JobId,
-  MediaInfo,
 } from "./types";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -31,10 +30,6 @@ async function tListen<T>(
 export const api = {
   async enqueueUrl(url: string): Promise<JobId> {
     return tInvoke<JobId>("enqueue_url", { url });
-  },
-
-  async fetchMetadata(url: string): Promise<MediaInfo> {
-    return tInvoke<MediaInfo>("fetch_metadata", { url });
   },
 
   async listJobs(): Promise<Job[]> {

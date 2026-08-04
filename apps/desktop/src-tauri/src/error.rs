@@ -14,9 +14,6 @@ pub enum AppError {
     #[error("toml encode: {0}")]
     TomlSer(#[from] toml::ser::Error),
 
-    #[error("json: {0}")]
-    Json(#[from] serde_json::Error),
-
     #[error("yt-dlp: {0}")]
     YtDlp(String),
 
@@ -25,12 +22,6 @@ pub enum AppError {
 
     #[error("sidecar not found: {0}")]
     Sidecar(String),
-
-    #[error("proxy: {0}")]
-    Proxy(String),
-
-    #[error("job: {0}")]
-    Job(String),
 
     #[error("asr: {0}")]
     Asr(String),
@@ -54,9 +45,3 @@ impl Serialize for AppError {
 }
 
 pub type AppResult<T> = Result<T, AppError>;
-
-impl From<anyhow::Error> for AppError {
-    fn from(e: anyhow::Error) -> Self {
-        AppError::Other(format!("{e:#}"))
-    }
-}

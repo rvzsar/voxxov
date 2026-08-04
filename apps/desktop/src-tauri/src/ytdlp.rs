@@ -237,6 +237,12 @@ fn build_args(dl: &DownloadConfig) -> Vec<String> {
         }
         .to_string(),
     );
+    if let Some(cf) = dl.cookie_file.as_deref() {
+        if !cf.is_empty() {
+            args.push("--cookies".to_string());
+            args.push(cf.to_string());
+        }
+    }
     if let Some(ua) = dl.user_agent.as_deref() {
         if !ua.is_empty() {
             args.push("--user-agent".to_string());

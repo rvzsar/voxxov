@@ -88,7 +88,6 @@ maxHeight = 1080       # 0 = no limit
 audioOnly = false
 concurrentFragments = 4
 retries = 3
-cookieFile = ""
 userAgent = ""
 
 [asr]
@@ -114,7 +113,7 @@ keepFiles = 3
 ```
 Voxxov/
 ├── voxxov.exe
-├── data/             # config.toml, logs/, jobs/<id>/, bench.json, transcripts/
+├── data/             # config.toml, logs/, jobs/<id>/
 ├── models/           # GigaAM-V3 + silero_vad.onnx (auto-downloaded)
 └── bin/              # yt-dlp, ffmpeg (auto-downloaded)
 ```
