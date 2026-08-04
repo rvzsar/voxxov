@@ -11,6 +11,7 @@ mod commands;
 mod config;
 mod error;
 mod ffmpeg;
+mod hardware;
 mod logging;
 mod models;
 mod paths;
@@ -45,6 +46,20 @@ pub fn run() {
     // <data_root>/data/logs/app.log.
     let cfg = config::load_or_default();
     logging::init(&cfg.logging);
+
+    // Аппаратные сведения + выбранные на их основе параметры — в лог,
+    // чтобы любой прогон можно было сопоставить с машиной.
+    let hw = crate::hardware::detect();
+    tracing::info!(
+        "hardware: {} | {} physical / {} logical cores | {} MB RAM | ASR threads = {}",
+        hw.cpu_brand,
+        hw.physical_cores
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "?".into()),
+        hw.logical_cores,
+        hw.total_memory_mb,
+        crate::hardware::asr_threads(),
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

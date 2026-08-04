@@ -152,6 +152,7 @@ pub fn diagnose(_state: tauri::State<'_, AppState>) -> SidecarStatus {
         ffmpeg: Some(crate::sidecar::ffmpeg_path()).filter(|p| p.is_file()),
         app_data: crate::paths::data_root(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
+        hardware: crate::hardware::detect().clone(),
     }
 }
 

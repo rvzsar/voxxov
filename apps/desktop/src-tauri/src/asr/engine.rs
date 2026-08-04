@@ -79,10 +79,10 @@ pub async fn transcribe(
         // Openvino = cpu в текущей версии sherpa-onnx.
         _ => "cpu",
     };
-    // int8-энкодер bandwidth-bound: 8 потоков оказались медленнее 4 на
-    // том же ролике (RTF 0.089 → 0.164) — больше потоков = thrash кэша.
-    // 4 — проверенный оптимум; на слабых машинах min() урежет сам.
-    let num_threads = num_cpus().min(4);
+    // Потоки ORT подбираются по железу при старте (hardware::asr_threads):
+    // int8-энкодер bandwidth-bound, потолок 4 (измерено: 8 потоков в 1.8
+    // раза медленнее 4 на том же ролике); слабые машины урезаются сами.
+    let num_threads = crate::hardware::asr_threads();
     let beam_size = cfg.beam_size;
 
     state.log_line(
@@ -578,10 +578,4 @@ pub fn discover_model_files(model_dir: &str) -> AppResult<(PathBuf, PathBuf, Pat
     })?;
 
     Ok((encoder, decoder, joiner, tokens))
-}
-
-fn num_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(2)
 }

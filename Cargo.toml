@@ -63,6 +63,8 @@ sha2 = "0.10"
 # per-chunk token vectors, yt-dlp stderr parsing). See
 # https://github.com/microsoft/mimalloc
 mimalloc = "0.1"
+# Hardware detection (cores, CPU, RAM) for adaptive ASR parameters.
+sysinfo = "0.39"
 
 # (lofty patch removed — was only needed for the old yt-dlp crate
 #  which depended on a yanked 0.23.x. With subprocess yt-dlp gone.)

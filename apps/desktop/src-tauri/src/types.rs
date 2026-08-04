@@ -173,4 +173,5 @@ pub struct SidecarStatus {
     pub ffmpeg: Option<PathBuf>,
     pub app_data: PathBuf,
     pub app_version: String,
+    pub hardware: crate::hardware::HardwareInfo,
 }

@@ -52,6 +52,7 @@ once_cell = { workspace = true }
 parking_lot = { workspace = true }
 sha2 = { workspace = true }
 mimalloc = { workspace = true }
+sysinfo = { workspace = true }
 
 [features]
 # По умолчанию включаем custom-protocol для релизной сборки
