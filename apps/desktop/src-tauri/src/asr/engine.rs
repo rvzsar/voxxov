@@ -447,13 +447,14 @@ impl WavReader {
                 .read(&mut bytes[filled..])
                 .map_err(|e| AppError::Asr(format!("read wav: {e}")))?;
             if n == 0 {
-                break; // файл короче data-чанка — вернём то, что есть
+                break;
             }
             filled += n;
         }
-        filled -= filled % self.bytes_per_sample as usize;
-        if filled == 0 {
-            return Ok(None);
+        // Файл короче data-чанка: старый Wave::read тоже падал на этом —
+        // не отдаём тихий частичный транскрипт.
+        if filled < bytes.len() {
+            return Err(AppError::Asr("wav file truncated".into()));
         }
         self.pos += filled as u64;
         let samples = if self.bytes_per_sample == 2 {
