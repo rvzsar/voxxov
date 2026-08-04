@@ -17,7 +17,7 @@ use crate::types::{JobUpdate, MediaInfo, Progress};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
@@ -50,6 +50,7 @@ impl YtDlpRunner {
             .arg(url)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        crate::sidecar::hide_console(&mut cmd);
 
         let output = tokio::time::timeout(METADATA_TIMEOUT, cmd.output())
             .await
@@ -120,14 +121,20 @@ impl YtDlpRunner {
             .arg(url)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        crate::sidecar::hide_console(&mut cmd);
 
         let mut child = cmd
             .spawn()
             .map_err(|e| AppError::YtDlp(format!("spawn yt-dlp: {e}")))?;
 
-        // Stream stderr for progress. stdout is read after the child exits
-        // (--print after_move:filepath outputs just one line at the end,
-        // so the pipe buffer never fills).
+        // Прогресс yt-dlp идёт в STDOUT (to_screen → out_files.out):
+        // `[download] Destination:`, `[Merger]`, `[download] 42.3% of ...`.
+        // В stderr — только ошибки/предупреждения. Последняя строка без
+        // префикса `[` — filepath из `--print after_move:filepath`.
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| AppError::YtDlp("no stdout".into()))?;
         let stderr = child
             .stderr
             .take()
@@ -135,11 +142,30 @@ impl YtDlpRunner {
 
         let state_for_events = state.clone();
         let job_id_owned = job_id.to_string();
+        let st_err = state_for_events.clone();
+        let st_jid = job_id_owned.clone();
         let mut tracker = DownloadTracker::new();
-        let events_task = tokio::spawn(async move {
+
+        let stdout_task = tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            let mut filepath: Option<String> = None;
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Some(p) =
+                    forward_progress(&state_for_events, &job_id_owned, &line, &mut tracker)
+                {
+                    filepath = Some(p);
+                }
+            }
+            filepath
+        });
+
+        let stderr_task = tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                forward_progress(&state_for_events, &job_id_owned, &line, &mut tracker);
+                if line.contains("ERROR:") || line.contains("WARNING:") {
+                    st_err.log_line(&st_jid, format!("yt-dlp: {line}"));
+                }
+                debug!("yt-dlp stderr: {line}");
             }
         });
 
@@ -147,30 +173,21 @@ impl YtDlpRunner {
             res = child.wait() => res.map_err(|e| AppError::YtDlp(format!("wait yt-dlp: {e}"))),
             _ = cancel.cancelled() => {
                 let _ = child.start_kill();
-                events_task.abort();
+                stdout_task.abort();
+                stderr_task.abort();
                 return Err(AppError::Cancelled);
             }
         };
-        events_task.abort();
+        let filepath = stdout_task
+            .await
+            .map_err(|e| AppError::YtDlp(format!("stdout join: {e}")))?
+            .ok_or_else(|| AppError::YtDlp("no filepath in stdout".into()))?;
         let status = status?;
 
         if !status.success() {
             return Err(AppError::YtDlp(format!("yt-dlp exited {status}")));
         }
 
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| AppError::YtDlp("no stdout".into()))?;
-        let mut buf = String::new();
-        stdout
-            .read_to_string(&mut buf)
-            .await
-            .map_err(|e| AppError::YtDlp(format!("read stdout: {e}")))?;
-        let filepath = buf
-            .lines()
-            .last()
-            .ok_or_else(|| AppError::YtDlp("no filepath in stdout".into()))?;
         let path = PathBuf::from(filepath);
         if !path.is_file() {
             return Err(AppError::YtDlp(format!(
@@ -369,13 +386,20 @@ fn fmt_eta(secs: f64) -> String {
     }
 }
 
-fn forward_progress(state: &AppState, job_id: &str, line: &str, tracker: &mut DownloadTracker) {
+/// Обработать строку stdout yt-dlp: прогресс → UI, filepath → `Some`.
+/// Строка без префикса `[` — вывод `--print after_move:filepath`.
+fn forward_progress(
+    state: &AppState,
+    job_id: &str,
+    line: &str,
+    tracker: &mut DownloadTracker,
+) -> Option<String> {
     // Новый поток: yt-dlp печатает `[download] Destination: <path>` перед
     // каждым файлом. Переключаем трекер; прогресс-строку UI увидит уже
     // с новым label и перекалиброванным общим pct.
     if let Some(dest) = line.strip_prefix("[download] Destination: ") {
         tracker.on_new_stream(dest);
-        return;
+        return None;
     }
 
     // Склейка потоков ffmpeg'ом: прогресса нет, меняем только label.
@@ -392,15 +416,14 @@ fn forward_progress(state: &AppState, job_id: &str, line: &str, tracker: &mut Do
                 ..Default::default()
             },
         );
-        return;
+        return None;
     }
 
     let Some(prog) = parse_download_progress(line) else {
-        if line.contains("ERROR:") {
-            state.log_line(job_id, format!("yt-dlp: {line}"));
+        if !line.starts_with('[') && !line.trim().is_empty() {
+            return Some(line.trim().to_string());
         }
-        debug!("yt-dlp stderr: {line}");
-        return;
+        return None;
     };
 
     let now = Instant::now();
@@ -444,10 +467,10 @@ fn forward_progress(state: &AppState, job_id: &str, line: &str, tracker: &mut Do
             ..Default::default()
         },
     );
-    debug!("yt-dlp stderr: {line}");
+    None
 }
 
-/// Распарсить одну stderr-строку yt-dlp. Форматы:
+/// Распарсить одну строку прогресса yt-dlp (stdout). Форматы:
 /// `[download]  42.3% of   100.00MiB at    5.20MiB/s ETA 00:12`
 /// `[download]  42.3% of ~  100.00MiB at    5.20MiB/s ETA 00:12 (frag 5/12)`
 /// `[download] 100% of   100.00MiB in 00:19`  ← без speed/ETA

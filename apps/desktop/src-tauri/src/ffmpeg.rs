@@ -76,6 +76,7 @@ impl FfmpegRunner {
             .arg(output);
 
         cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+        crate::sidecar::hide_console(&mut cmd);
 
         let mut child = cmd
             .spawn()

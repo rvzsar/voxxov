@@ -3,6 +3,19 @@
 use crate::paths;
 use std::path::PathBuf;
 
+/// Не показывать консольное окно дочернего процесса (Windows).
+/// yt-dlp/ffmpeg — консольные exe: без этого флага они открывают
+/// собственное окно консоли при каждом запуске.
+pub(crate) fn hide_console(cmd: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
 pub fn bin_dir() -> PathBuf {
     paths::bin_dir()
 }

@@ -25,6 +25,7 @@ pub async fn transcribe_cmd(
     let mut cmd = Command::new(&program);
     cmd.args(&tokens);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::sidecar::hide_console(&mut cmd);
 
     let mut child = cmd
         .spawn()
