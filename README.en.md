@@ -51,18 +51,25 @@ URL or local file
 - ~1 GB free disk, 8 GB RAM recommended
 - The `.exe` must live in a writable folder (portable, no installer)
 
-## Getting started
+## Install and run
+
+**Ready-made binary** — download `voxxov-<version>-windows-x86_64.exe` from [Releases](https://github.com/rvzsar/voxxov/releases):
+- versioned builds (`v*` tags) — stable;
+- `rolling` — fresh build from `main`, rebuilt on every push.
+
+Drop the `.exe` into any writable folder and run it — no installer, no
+admin rights.
+
+On first run, yt-dlp/ffmpeg and the model (~330 MB) are downloaded into
+`bin/` and `models/` next to the `.exe`. Subsequent runs work offline.
+
+**From source (development):**
 
 ```cmd
 scripts\dev.cmd
 ```
 
-Installs npm/pnpm deps and starts `tauri dev`. Prebuilt binaries are
-published on GitHub Releases: versioned builds from `v*` tags, plus a
-`rolling` release rebuilt on every push to `main`.
-
-First run downloads the binaries and models (~330 MB) into `bin/` and
-`models/`. Subsequent runs work offline.
+Installs npm/pnpm deps and starts `tauri dev`.
 
 ## Configuration
 
