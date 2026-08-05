@@ -8,6 +8,12 @@ Rust (Tauri 2) + Svelte 5. Все данные — рядом с `.exe`.
 
 English version: [README.md](./README.md).
 
+## Скриншоты
+
+| Задачи | Локальные файлы | Настройки |
+|---|---|---|
+| ![Задачи](assets/screenshots/tasks.png) | ![Локальные файлы](assets/screenshots/local-files.png) | ![Настройки](assets/screenshots/settings.png) |
+
 ## Возможности
 
 - Офлайн-ASR — без облака, аудио не покидает машину

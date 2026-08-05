@@ -8,6 +8,12 @@ Rust (Tauri 2) + Svelte 5. All data lives next to the `.exe`.
 
 Русская версия: [README.ru.md](./README.ru.md).
 
+## Screenshots
+
+| Tasks | Local files | Settings |
+|---|---|---|
+| ![Tasks](assets/screenshots/tasks.png) | ![Local files](assets/screenshots/local-files.png) | ![Settings](assets/screenshots/settings.png) |
+
 ## Features
 
 - Offline ASR — no cloud, audio never leaves the machine
