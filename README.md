@@ -1,72 +1,72 @@
 # Voxxov
 
-Portable Windows desktop app: download a video (yt-dlp), extract audio (ffmpeg), transcribe Russian speech offline (GigaAM-V3 via sherpa-onnx), export to TXT / SRT / JSON.
+Портативное Windows-приложение: скачивание видео (yt-dlp), извлечение аудио (ffmpeg), офлайн-распознавание русской речи (GigaAM-V3 через sherpa-onnx), экспорт в TXT / SRT / JSON.
 
-The name is a palindrome of its own theme: **VOX** (Latin for "voice") and its mirror **XOV**.
+Название — игра слов на собственную тему: **VOX** (лат. «голос») и его зеркальное отражение **XOV**.
 
-Rust (Tauri 2) + Svelte 5. All data lives next to the `.exe`.
+Rust (Tauri 2) + Svelte 5. Все данные — рядом с `.exe`.
 
-Русская версия: [README.ru.md](./README.ru.md).
+English version: [README.en.md](./README.en.md).
 
-## Screenshots
+## Скриншоты
 
-| Tasks | Local files | Settings |
+| Задачи | Локальные файлы | Настройки |
 |---|---|---|
-| ![Tasks](assets/screenshots/tasks.png) | ![Local files](assets/screenshots/local-files.png) | ![Settings](assets/screenshots/settings.png) |
+| ![Задачи](assets/screenshots/tasks.png) | ![Локальные файлы](assets/screenshots/local-files.png) | ![Настройки](assets/screenshots/settings.png) |
 
-## Features
+## Возможности
 
-- Offline ASR — no cloud, audio never leaves the machine
-- Single-pass streaming pipeline: memory stays O(chunk), not O(file)
-- Real-time progress: per-stage %, speed/ETA, ASR RTF (real-time factor)
-- Cancellation at any stage
-- Proxy: SOCKS5 / HTTP(S) with auth and no-proxy list
-- ASR devices: CPU / CUDA / DirectML / OpenVINO, beam search (1–64)
-- External ASR CLI via `cmd:` prefix in `modelDir`
-- Batch processing of local folders (recursive scan)
-- Auto-download of yt-dlp, ffmpeg, GigaAM model and SileroVAD on first run
-- Hardware-aware: ASR threads are picked from physical core count at startup
+- Офлайн-ASR — без облака, аудио не покидает машину
+- Одно-проходный стриминговый пайплайн: память O(чанк), а не O(файл)
+- Прогресс в реальном времени: % по стадиям, скорость/ETA, RTF (real-time factor)
+- Отмена на любой стадии
+- Прокси: SOCKS5 / HTTP(S) с авторизацией и no-proxy списком
+- Устройства ASR: CPU / CUDA / DirectML / OpenVINO, beam search (1–64)
+- Внешний ASR-CLI через префикс `cmd:` в `modelDir`
+- Пакетная обработка локальных папок (рекурсивное сканирование)
+- Авто-скачивание yt-dlp, ffmpeg, модели GigaAM и SileroVAD при первом запуске
+- Аппаратно-зависимые параметры: потоки ASR подбираются по числу физических ядер
 
-## Pipeline
+## Пайплайн
 
 ```
-URL or local file
-  → yt-dlp            download (parallel streams, per-stream progress)
-  → ffmpeg            16 kHz mono WAV
-  → SileroVAD         speech segments (streaming, 64 ms feed)
-  → merge             chunks of 15–22 s (same constants as GigaAM segment_audio_file)
+URL или локальный файл
+  → yt-dlp            скачивание (параллельные потоки, прогресс по каждому)
+  → ffmpeg            16 кГц mono WAV
+  → SileroVAD         речевые сегменты (стриминг, фид 64 мс)
+  → склейка           чанки 15–22 с (те же константы, что в GigaAM segment_audio_file)
   → GigaAM-V3         e2e_rnnt, INT8, sherpa-onnx
   → TXT / SRT / JSON
 ```
 
-- Chunks are decoded as soon as they close — one pass over the file
-- Chunks longer than 30 s are split at the quietest point, not in the middle of a word
-- Punctuation and casing are built into the model
-- Every job writes `bench.json` (per-stage wall time, RTF, throughput)
+- Чанк декодируется сразу после закрытия — один проход по файлу
+- Чанки длиннее 30 с режутся в самом тихом месте, а не посреди слова
+- Пунктуация и регистр встроены в модель
+- Каждая задача пишет `bench.json` (время стадий, RTF, пропускная способность)
 
-## Requirements
+## Требования
 
 - Windows 10/11 x64
-- WebView2 runtime (preinstalled on Windows 11)
-- ~1 GB free disk, 8 GB RAM recommended
-- The `.exe` must live in a writable folder (portable, no installer)
+- WebView2 runtime (предустановлен на Windows 11)
+- ~1 ГБ на диске, рекомендуется 8 ГБ RAM
+- `.exe` должен лежать в доступной для записи папке (портативно, без установщика)
 
-## Getting started
+## Запуск
 
 ```cmd
 scripts\dev.cmd
 ```
 
-Installs npm/pnpm deps and starts `tauri dev`. Prebuilt binaries are
-published on GitHub Releases: versioned builds from `v*` tags, plus a
-`rolling` release rebuilt on every push to `main`.
+Ставит npm/pnpm-зависимости и запускает `tauri dev`. Готовые бинарники
+публикуются в GitHub Releases: версионные сборки по тегам `v*`, плюс
+rolling-релиз, пересобираемый при каждом push в `main`.
 
-First run downloads the binaries and models (~330 MB) into `bin/` and
-`models/`. Subsequent runs work offline.
+При первом запуске скачиваются бинарники и модель (~330 МБ) в `bin/` и
+`models/`. Дальше приложение работает офлайн.
 
-## Configuration
+## Конфигурация
 
-`<exe_dir>/data/config.toml` — all sections optional, defaults apply.
+`<exe_dir>/data/config.toml` — все секции опциональны, применяются defaults.
 
 ```toml
 [proxy]
@@ -79,25 +79,25 @@ noProxy = "localhost,127.0.0.1"
 
 [download]
 format = "bv*+ba/b"
-maxHeight = 1080       # 0 = no limit
+maxHeight = 1080       # 0 = без ограничения
 audioOnly = false
 embedSubs = false
 concurrentFragments = 4
 retries = 3
 overwrite = false
-cookieFile = ""        # Netscape-format cookies file
+cookieFile = ""        # файл cookies в формате Netscape
 userAgent = ""
-mirrorPrefix = ""      # mirror prefix for GitHub downloads, e.g. "https://mirror.example.com/"
+mirrorPrefix = ""      # префикс-зеркало для загрузок с GitHub, напр. "https://mirror.example.com/"
 
 [asr]
-modelDir = ""          # empty = auto-download; "cmd:cli --args" = external ASR
-sampleRate = 16000     # fixed: GigaAM/VAD are 16 kHz only
+modelDir = ""          # пусто = авто-скачивание; "cmd:cli --args" = внешний ASR
+sampleRate = 16000     # фиксировано: GigaAM/VAD работают только на 16 кГц
 language = "ru"
 device = "cpu"         # cpu | cuda | directml | openvino
 beamSize = 5           # 1 = greedy
 
 [output]
-dir = ""               # copy transcripts here too; empty = job folder only
+dir = ""               # дополнительно копировать транскрипты сюда; пусто = только папка задачи
 formats = ["txt", "srt", "json"]
 
 [logging]
@@ -107,21 +107,21 @@ maxSizeMb = 5
 keepFiles = 3
 ```
 
-## Layout
+## Раскладка
 
 ```
 voxxov.exe
 ├── data/
 │   ├── config.toml
 │   ├── logs/app.log
-│   └── jobs/<job_id>/   ← video, audio.wav, transcript.{txt,srt,json}, bench.json
-├── models/              ← GigaAM-V3 + silero_vad.onnx (auto-downloaded)
-└── bin/                 ← yt-dlp.exe, ffmpeg.exe (auto-downloaded)
+│   └── jobs/<job_id>/   ← видео, audio.wav, transcript.{txt,srt,json}, bench.json
+├── models/              ← GigaAM-V3 + silero_vad.onnx (авто-скачиваются)
+└── bin/                 ← yt-dlp.exe, ffmpeg.exe (авто-скачиваются)
 ```
 
-## Performance
+## Производительность
 
-`<job_id>/bench.json` after each job:
+`<job_id>/bench.json` после каждой задачи:
 
 ```json
 {
@@ -136,17 +136,17 @@ voxxov.exe
 }
 ```
 
-`asr_rtf` < 1.0 means faster than real-time. On a mid-range desktop CPU the
-transcribe stage runs at roughly 0.09× real-time (≈11× faster than the
-audio duration).
+`asr_rtf` < 1.0 — быстрее реального времени. На среднестатистическом
+десктопном CPU стадия распознавания идёт примерно со скоростью 0.09×
+от реального времени (≈ в 11 раз быстрее длительности аудио).
 
-## License
+## Лицензия
 
-App: **GPL-3.0-only** — see [LICENSE](./LICENSE).
+Приложение: **GPL-3.0-only** — см. [LICENSE](./LICENSE).
 
-Third-party components:
-- [GigaAM](https://github.com/salute-developers/GigaAM) (Sber) — MIT; model files are downloaded from the `model-gigaam-v3` release of [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite)
-- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — Apache-2.0; `silero_vad.onnx` from its official releases
+Сторонние компоненты:
+- [GigaAM](https://github.com/salute-developers/GigaAM) (Сбер) — MIT; файлы модели скачиваются из релиза `model-gigaam-v3` репозитория [amidexe/govorun-lite](https://github.com/amidexe/govorun-lite)
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — Apache-2.0; `silero_vad.onnx` — из его официальных релизов
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — Unlicense
 - [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) — GPL
 - [Tauri](https://github.com/tauri-apps/tauri) — Apache-2.0 / MIT
